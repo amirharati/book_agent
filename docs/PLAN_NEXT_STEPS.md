@@ -65,6 +65,7 @@
 
 ## Phase 4: Later (not required for initial agent use)
 
+- **Agent workflow / orchestration:** Using toc, search, read, and figure together when answering questions or demonstrating a point (e.g. in a notebook). `.cursor/rules` can act as a thin orchestrator (rules tell the agent when to call which tool). For something more explicit later: a small workflow API or MCP that composes the tools. See `docs/tasks.md` §2.1.
 - **Summaries:** Per-chapter (or per-section) short summary in index or separate file; agent uses it as a mental model. Can be LLM-generated in a one-off pass over each chapter chunk.
 - **PDF ↔ markdown wiring:** When you add a viewer, use meta’s `table_of_contents` (title, page_id, polygon) + our index (title → line range) to implement “click on PDF → show markdown” and “click in markdown → jump in PDF”.
 - **Internal refs as links:** Optionally preprocess md to turn “Section 1.2.4” into `[Section 1.2.4](#sec-1-2-4)` or link to a line range; not strictly required if the agent can resolve via index.

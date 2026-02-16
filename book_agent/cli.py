@@ -9,13 +9,13 @@ CLI entry point: run conversion (and future commands) from the shell.
 """
 
 from pathlib import Path
-import json
+
 import typer
 
+from book_agent.agent_tools import figure_app, run_read, run_search, run_toc
 from book_agent.api import convert_pdf_to_markdown
 from book_agent.backends import REGISTRY
 from book_agent.markdown_index import build_index, write_index
-from book_agent.agent_tools import load_index, search_sections, get_section_content, list_toc
 
 app = typer.Typer(
     name="book-agent",
@@ -152,42 +152,13 @@ def index_cmd(
             typer.echo(f"  {d}")
 
 
-def _resolve_book_path(path: Path) -> tuple[Path, Path]:
-    """Helper to find index.json and .md file from a path."""
-    path = path.resolve()
-    if path.is_file():
-        if path.name == "index.json":
-            folder = path.parent
-            index_path = path
-        elif path.suffix == ".md":
-            folder = path.parent
-            # Find sibling index.json
-            index_path = folder / "index.json"
-        else:
-             # Assume it's a file in the book folder
-            folder = path.parent
-            index_path = folder / "index.json"
-    else:
-        folder = path
-        index_path = folder / "index.json"
-
-    if not index_path.exists():
-        typer.echo(f"Error: index.json not found at {index_path}", err=True)
+def _run_tool(run_fn, *args, **kwargs):
+    """Run a tool; on ValueError echo and exit."""
+    try:
+        return run_fn(*args, **kwargs)
+    except ValueError as e:
+        typer.echo(str(e), err=True)
         raise typer.Exit(1)
-        
-    # Find the main markdown file referenced in index or guess
-    # For now, we guess based on directory contents if not in index (it's not currently stored in index)
-    md_files = list(folder.glob("*.md"))
-    if not md_files:
-        typer.echo(f"Error: No .md file found in {folder}", err=True)
-        raise typer.Exit(1)
-        
-    # If there are multiple, pick the largest one (likely the full book) or one matching pattern
-    # The converter outputs "full.md" or "<name>.md". 
-    # Let's pick the largest .md file as the likely full text.
-    md_path = max(md_files, key=lambda p: p.stat().st_size)
-    
-    return index_path, md_path
 
 
 @app.command("toc")
@@ -196,10 +167,7 @@ def toc_cmd(
     depth: int = typer.Option(2, "--depth", "-d", help="Max depth to display"),
 ) -> None:
     """Show Table of Contents."""
-    index_path, _ = _resolve_book_path(path)
-    index = load_index(index_path)
-    
-    lines = list_toc(index, max_depth=depth)
+    lines = _run_tool(run_toc, path.resolve(), depth)
     for line in lines:
         typer.echo(line)
 
@@ -210,14 +178,10 @@ def search_cmd(
     path: Path = typer.Argument(..., help="Path to book folder or index.json", path_type=Path),
 ) -> None:
     """Search for sections by title."""
-    index_path, _ = _resolve_book_path(path)
-    index = load_index(index_path)
-    
-    matches = search_sections(index, query)
+    matches = _run_tool(run_search, path.resolve(), query)
     if not matches:
         typer.echo("No matches found.")
         return
-        
     for m in matches:
         typer.echo(f"[{m['level']}] {m['title']} (p. {m['pdf_page']})")
         typer.echo(f"    Line: {m['md_start_line']}-{m['md_end_line']}")
@@ -229,27 +193,11 @@ def read_cmd(
     path: Path = typer.Argument(..., help="Path to book folder or index.json", path_type=Path),
 ) -> None:
     """Read content of a specific section."""
-    index_path, md_path = _resolve_book_path(path)
-    index = load_index(index_path)
-    
-    matches = search_sections(index, query)
-    if not matches:
-        typer.echo(f"No section found matching '{query}'")
-        raise typer.Exit(1)
-        
-    # If multiple matches, ask user or pick first?
-    # For a CLI tool for agents, picking the best match or failing is better.
-    # We'll pick the first exact-ish match or just the first one.
-    
-    # Simple heuristic: prefer shorter title if it contains query (exact match logic)
-    # But search_sections returns anything containing query.
-    
-    selected = matches[0]
-    if len(matches) > 1:
-        typer.echo(f"Found {len(matches)} matches, showing first: {selected['title']}", err=True)
-        
-    content = get_section_content(selected, md_path)
+    content = _run_tool(run_read, path.resolve(), query)
     typer.echo(content)
+
+
+app.add_typer(figure_app, name="figure")
 
 
 def main() -> None:

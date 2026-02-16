@@ -135,6 +135,31 @@ If no section matches, the command prints an error and exits with code 1.
 
 ---
 
+### 1.4 Figures: `figure resolve` and `figure show`
+
+**Purpose:** Resolve a figure reference (e.g. from markdown `![](_page_22_Figure_2.jpeg)`) to a path, and optionally get path + prompt + base64 image for **agent image-injection test** (so the agent can try to “see” the figure directly).
+
+**Commands:**
+
+```bash
+book-agent figure resolve <path> <figure_ref>
+book-agent figure show <path> <figure_ref> [--no-image]
+```
+
+- **figure_ref:** Filename (e.g. `_page_0_Figure_0.jpeg`) or markdown-style `![](_page_0_Figure_0.jpeg)`.
+- **show** prints `PATH:`, `PROMPT:`, and optionally `IMAGE_BASE64` / `IMAGE_MEDIA_TYPE` for testing whether the calling agent (e.g. Cursor) can receive and understand the image. Use `--no-image` to get only path + prompt.
+
+**Examples:**
+
+```bash
+book-agent figure resolve book_projects/ecef4396 _page_0_Figure_0.jpeg
+book-agent figure show book_projects/ecef4396 '![](_page_22_Figure_2.jpeg)'
+```
+
+If the figure file is missing, the command prints an error and exits with code 1.
+
+---
+
 ## 2. AI usage
 
 An agent can use these tools in two ways:
@@ -250,6 +275,8 @@ print(content)
 | See structure + pages | `book-agent toc <path> [-d N]` | Same | `list_toc(load_index(index_path), max_depth=N)` |
 | Find sections by topic | `book-agent search "query" <path>` | Same | `search_sections(load_index(index_path), "query")` |
 | Get section text | `book-agent read "title" <path>` | Same | `get_section_content(section, md_path)` after search |
+| Resolve figure | `book-agent figure resolve <path> <ref>` | Same | `resolve_figure(book_folder, ref)` |
+| Figure for agent (inject test) | `book-agent figure show <path> <ref>` | Same | `get_figure_for_agent(book_folder, ref)` |
 
 ---
 

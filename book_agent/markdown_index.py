@@ -132,24 +132,37 @@ def parse_contents_table(lines: list[str]) -> list[tuple[str, int]]:
         if not cells:
             continue
             
-        # Last cell is usually page number
-        page_str = cells[-1]
-        # Remove HTML from page string (e.g. <b>123</b>)
-        page_str = HTML_TAG_RE.sub("", page_str)
+        # Search backwards for a valid page number
+        page = None
+        page_index = -1
         
-        try:
-            page = int(page_str)
-        except ValueError:
-            # Try Roman?
-            page = _roman_to_int(page_str)
-            if page is None:
+        for i in range(len(cells) - 1, -1, -1):
+            p_str = HTML_TAG_RE.sub("", cells[i]).strip()
+            if not p_str:
                 continue
                 
-        # Title is the join of other cells, ignoring empty ones and numbers
-        # But we want to keep the chapter number if it's in a separate cell
+            # Try integer
+            try:
+                page = int(p_str)
+                page_index = i
+                break
+            except ValueError:
+                pass
+                
+            # Try Roman
+            r_val = _roman_to_int(p_str)
+            if r_val is not None:
+                page = r_val
+                page_index = i
+                break
+        
+        if page is None:
+            continue
+
+        # Title is the join of cells before the page number
         title_parts = []
-        for c in cells[:-1]:
-            c_clean = HTML_TAG_RE.sub("", c).strip()
+        for k in range(page_index):
+            c_clean = HTML_TAG_RE.sub("", cells[k]).strip()
             if not c_clean:
                 continue
             title_parts.append(c_clean)

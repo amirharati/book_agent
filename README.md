@@ -4,6 +4,9 @@ Tools and agents to **read**, **learn**, and **apply** content from books: work 
 
 **Input:** Markdown can be produced externally (e.g. your own PDF→Markdown pipeline) or via the built-in PyMuPDF backend. Output layout: `book_projects/<slug>/md/`, `figures/`, `index.json`, `meta.json`.
 
+Currently, I am using Marker :https://github.com/datalab-to/marker 
+
+
 See [PROJECT.md](PROJECT.md) for the high-level plan. Details in [docs/PHASE1_MARKDOWN_CONVERSION.md](docs/PHASE1_MARKDOWN_CONVERSION.md).
 
 **Book index and reading tools:** After conversion (or if you have existing Markdown + meta), run `book-agent index <path>` to build `index.json`. Then use `toc`, `search`, and `read` to browse and read sections from the CLI or from an AI agent. Full usage for both humans and AI: **[docs/BOOK_AGENT_TOOLS.md](docs/BOOK_AGENT_TOOLS.md)**.
