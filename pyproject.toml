@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "book-agent"
+version = "0.1.0"
+description = "Tools and agents to read, learn, and apply content from books (PDF → Markdown, indexing, workflows)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Book Agent" }]
+dependencies = [
+    "typer>=0.9.0",
+    "pymupdf>=1.24.0",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "ruff>=0.1"]
+
+[project.scripts]
+book-agent = "book_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["book_agent*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
