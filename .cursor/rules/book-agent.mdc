@@ -1,0 +1,44 @@
+---
+description: Use book-agent tools (toc, search, read, figure) when answering about the book or using book content in notebooks
+alwaysApply: true
+---
+
+# Book-agent tools
+
+When the user asks about the **book** (e.g. "what does the book say about X?", "explain section 2.4", "add a figure to the notebook") use the book-agent tools. All tools live in `book_agent.agent_tools`; book path is usually the project folder (e.g. `book_projects/ecef4396`).
+
+## Tools (Python)
+
+```python
+from book_agent.agent_tools import (
+    run_toc,      # run_toc(path, depth=2) -> list of TOC lines
+    run_search,   # run_search(path, query) -> list of section dicts
+    run_read,     # run_read(path, query) -> markdown string (first matching section)
+    resolve_figure,      # resolve_figure(book_folder, figure_ref) -> { ok, path, error }
+    get_figure_for_agent # get_figure_for_agent(book_folder, figure_ref, include_image=True) -> path, prompt, optional base64
+)
+from pathlib import Path
+path = Path("book_projects/ecef4396")  # or path from context
+```
+
+- **toc:** List structure (chapters/sections). Use to see what’s in the book.
+- **search:** Find sections by title substring. Use before reading.
+- **read:** Get full markdown of one section (first match for query). Use to answer from content.
+- **figure:** Resolve ref (e.g. `_page_102_Figure_3.jpeg` or `![](_page_102_Figure_3.jpeg)`) to path; optionally get base64. **You** load the image (e.g. read the file at `result["path"]`) to interpret or insert it; the tool does not describe the image.
+
+## Workflow
+
+1. **Answer a question:** `run_search(path, query)` → pick section → `run_read(path, section_title)` → synthesize answer. If the section or user mentions a figure, `resolve_figure(path, ref)` then read the image file and use it in the answer or notebook.
+2. **Use a figure in a notebook:** `resolve_figure(book_folder, figure_ref)` → get `path` → read image from path and insert (e.g. markdown image or display in cell).
+
+## CLI (alternative)
+
+```bash
+book-agent toc <path> [--depth N]
+book-agent search "<query>" <path>
+book-agent read "<section title>" <path>
+book-agent figure resolve <path> <figure_ref>
+book-agent figure show <path> <figure_ref>
+```
+
+Path can be the book folder, `index.json`, or the main `.md` file.
