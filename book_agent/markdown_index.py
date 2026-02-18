@@ -23,6 +23,9 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
+# Bump this when index schema or build logic changes; stale indices will be rebuilt on load.
+INDEX_VERSION = 1
+
 # ---------------------------------------------------------------------------
 # Regex patterns
 # ---------------------------------------------------------------------------
@@ -553,13 +556,18 @@ def build_index(md_path: Path, meta_path: Path | None = None) -> dict:
     annotations = _collect_annotations(meta_entries, layout)
     
     return {
+        "index_version": INDEX_VERSION,
         "chapters": chapters,
         "page_count": len(page_markers),
         "pdf_to_toc_offset": offset,
         "annotations": annotations,
-        "diagnostics": diag
+        "diagnostics": diag,
     }
 
-def write_index(index: dict, out_path: Path):
-    with open(out_path, 'w', encoding='utf-8') as f:
+
+def write_index(index: dict, out_path: Path) -> None:
+    """Write index to JSON. Ensures index_version is set to current INDEX_VERSION."""
+    index = dict(index)
+    index["index_version"] = INDEX_VERSION
+    with open(out_path, "w", encoding="utf-8") as f:
         json.dump(index, f, indent=2)

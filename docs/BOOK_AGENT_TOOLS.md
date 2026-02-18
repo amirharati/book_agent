@@ -14,7 +14,14 @@ This document describes how to use the book-agent **toc**, **search**, and **rea
 
 ### Config (optional)
 
-A config file (`.book_agent.json` in the current working directory, or path in env `BOOK_AGENT_CONFIG`) can define **books** (id → path), **current_book**, and **outputs** (e.g. where to write notebooks). If you set a current book, you can omit the path argument for toc/search/read/figure and they will use the current book. See `book-agent config show`, `config set-current`, `config add-book`, `config set-output`. No assumed input/output locations; you add books and set outputs as needed. Common layouts: book folders under e.g. `inputs/book_projects/<slug>/`, outputs under e.g. `outputs/` or `outputs/notebooks/`. The agent (Cursor rule) will ask you when current book or output path is null or empty.
+A **main config** file (`.book_agent.json`; location via cwd, repo root, or env `BOOK_AGENT_CONFIG`) defines:
+
+- **documents** — registry of document id → path (book/paper folders). Ids are unique and user-chosen.
+- **output_root** — directory where **workspaces** live (default `outputs`). Each workspace is a folder `output_root/<workspace_id>/` with an optional `.book_workspace.json` listing which documents belong to that workspace and the **current document** for toc/search/read.
+- **current_workspace** — which workspace is active.
+
+If you set a current workspace and that workspace has a current document (or a single document), you can omit the path argument for toc/search/read/figure and they will use that document. Outputs go to the workspace folder (or a subdir set via `output_subdirs` in the workspace config).  
+**CLI:** `book-agent config show`, `set-current-workspace`, `add-document`, `create-workspace`, `add-to-workspace`, `set-workspace-current`, `set-output-subdir`; backward-compat: `set-current`, `add-book`, `set-output`. The agent (Cursor rule) will ask when current workspace or current document is missing.
 
 ---
 

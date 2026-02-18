@@ -7,11 +7,33 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
+from book_agent.markdown_index import INDEX_VERSION, build_index, write_index
+from book_agent.path_utils import resolve_folder_and_md
+
 
 def load_index(index_path: Path) -> Dict[str, Any]:
-    """Load the book index from a JSON file."""
+    """
+    Load the book index from a JSON file. If index_version is missing or less than
+    the current INDEX_VERSION, the index is rebuilt and overwritten (so code updates
+    can refresh old indices).
+    """
+    index_path = Path(index_path).resolve()
     with open(index_path, "r", encoding="utf-8") as f:
-        return json.load(f)
+        data = json.load(f)
+    current = data.get("index_version")
+    if current is not None and current >= INDEX_VERSION:
+        return data
+    folder = index_path.parent
+    try:
+        _, md_path = resolve_folder_and_md(folder)
+    except ValueError:
+        return data
+    meta_path = md_path.parent / (md_path.stem + "_meta.json")
+    if not meta_path.is_file():
+        meta_path = None
+    index = build_index(md_path, meta_path)
+    write_index(index, index_path)
+    return index
 
 
 def _flatten_sections(sections: List[Dict], parent_path: str = "") -> List[Dict]:

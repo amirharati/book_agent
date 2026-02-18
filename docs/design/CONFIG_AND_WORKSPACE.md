@@ -141,5 +141,45 @@ All config commands read/write the same config file (see §3). Optional: `book-a
 
 ---
 
-**Status:** Design; implementation to follow.  
-**References:** `docs/tasks.md` §1.2 (config/workspace), §2.1 (orchestration), §4 (repo restructure).
+## 10. Implemented: workspace-based model
+
+The codebase now uses a **workspace-based** model (superseding the original single-file books/current_book/outputs schema).
+
+### Main config (`.book_agent.json`)
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `documents` | `object` | Registry: document id (string) → path (string). Paths relative to config base. **Unique ids**; one document can be referenced by many workspaces. |
+| `output_root` | `string` | Directory under config base where workspace folders live (default `outputs`). |
+| `current_workspace` | `string \| null` | Active workspace id (folder name under `output_root`). |
+
+### Workspace config (`<output_root>/<workspace_id>/.book_workspace.json`)
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `documents` | `array` | List of document ids in this workspace (references into main `documents`). No duplicates. |
+| `current_document` | `string \| null` | Default document for toc/search/read when path is omitted. |
+| `output_subdirs` | `object` | Optional: e.g. `{"notebooks": "notebooks", "summaries": "summaries"}` so writes go to subdirs under workspace root. |
+
+### Resolution and APIs
+
+- **Current document path:** `get_document_path_for_agent(doc_id=None)` uses current workspace → workspace config → `current_document` (or single doc if only one in workspace).
+- **Output dir:** `get_output_dir(workspace_id, subdir_key)` → workspace root or `workspace_root / output_subdirs[key]`.
+- **Uniqueness:** Document ids unique in registry; workspace ids unique (one folder per id); doc id appears at most once per workspace list.
+- **Migration:** On load, if file has `books` / `current_book` / `outputs`, they are migrated to the new schema and the file is saved once.
+
+### CLI (implemented)
+
+- `config show` — main config + resolved workspace dir, workspace documents, current document path, output dir.
+- `config set-current-workspace <id>`, `config add-document <id> <path>`, `config create-workspace <id>`, `config add-to-workspace <ws> <doc>`, `config remove-from-workspace <ws> <doc>`, `config set-workspace-current <ws> [doc]`, `config set-output-subdir <ws> <key> <subdir>`, `config path`.
+- **Backward-compat:** `set-current`, `add-book`, `set-output` (alias to workspace behaviour).
+
+### Index auto-create and versioning
+
+- **Auto-create:** `resolve_book_path` in `path_utils` builds `index.json` when missing (using `resolve_folder_and_md` + `build_index` + `write_index`), so toc/search/read/figure and config resolution don’t fail when the index hasn’t been built yet.
+- **Index version:** Each index JSON includes `index_version` (see `markdown_index.INDEX_VERSION`). When you change index schema or build logic, bump `INDEX_VERSION` in code. `load_index()` in `core` compares the file’s version to the current one; if the file’s version is missing or lower, it rebuilds the index and overwrites the file. That way old indices are refreshed after code updates.
+
+---
+
+**Status:** Implemented (workspace-based model). Original design (§1–9) described the earlier single-file schema; §10 reflects what is in code.  
+**References:** `docs/tasks.md` §1.2, §2 (Phase B), §2.1 (orchestration).

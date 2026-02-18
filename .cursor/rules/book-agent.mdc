@@ -9,32 +9,30 @@ When the user asks about the **book** or wants to do work on a chapter, use the 
 
 ## Proactive prompts (ask when null or empty)
 
-1. **No current book** — If `config["current_book"]` is null or `config["_resolved_current_book_path"]` is None (or `config["books"]` is empty):
-   - Ask: *"No book is set. Which book should we use? Please give me the path to the book folder (e.g. `inputs/book_projects/ecef4396`) and a short id (e.g. `bishop`), and I'll add it and set it as current."*
-   - Then call `add_book(id, path)` and `set_current_book(id)` with the user's values.
+1. **No current workspace or current document** — If `config["current_workspace"]` is null, or `config["_resolved_current_document_path"]` is None (or the current workspace has no documents):
+   - Ask: *"No workspace or document is set. You can create a workspace (e.g. `bishop`) and add a book: give me the path to the book folder (e.g. `inputs/book_projects/ecef4396`) and an id (e.g. `bishop`). I'll add the document, create the workspace if needed, add it to the workspace, and set it as current."*
+   - Then: `add_document(id, path)`; if workspace doesn't exist, `create_workspace(id)`; `add_document_to_workspace(id, id)`; `set_current_workspace(id)`; `set_workspace_current_document(id, id)`.
+   - **Backward-compat:** You can also use `add_book(id, path)` and `set_current_book(id)` to add a document and set a same-named workspace as current (creates workspace if missing).
 
-2. **No output path** — If the user might want to write notebooks/artifacts and `config["outputs"]` is empty or missing the key you need (e.g. `notebooks`):
-   - Ask: *"Where should I write notebooks (and other outputs)? For example `outputs/notebooks` or `outputs/chapters`. Tell me the path and I'll set it."*
-   - Then call `set_output("notebooks", path)` (or the key they prefer) with the user's path.
+2. **No output dir** — Writing goes to the **current workspace** folder (`config["_resolved_output_dir"]`). If the user might want to write and there is no current workspace (so no output dir):
+   - Ask as in (1) to set up a workspace. Optionally set a subdir with `set_workspace_output_subdir(workspace_id, "notebooks", "notebooks")` so e.g. notebooks go to `workspace/notebooks/`.
+   - **Backward-compat:** `set_output("notebooks", path)` sets the output subdir for the *current* workspace (path = subdir name under workspace root).
 
-3. **Index missing** — Before using toc/search/read (or before add_book), the book folder must have `index.json`. If you have the book path and that folder has no `index.json`:
-   - **Use the index tool:** call `run_index(Path(path))` (from `book_agent.agent_tools`) to create `index.json`. Do not skip this; toc/search/read require it.
-   - If the user hasn't given a path yet, ask for the book folder path, then run `run_index(Path(path))`, then proceed with add_book and set_current_book.
+3. **Index missing** — Before using toc/search/read, the book folder must have `index.json`. If the folder has a `.md` but no `index.json`, the tools **auto-create** the index when resolving the path; you can also call `run_index(Path(path))` explicitly. If add_document fails with "index.json not found", the path may be invalid (no .md in folder); otherwise index is built on first resolve.
 
-Do not assume paths or ids; ask once and then set config so later steps work. **Prefer book-agent tools** (run_index, run_toc, run_search, run_read, resolve_figure, config) over grep or raw file reads when doing book-related work; use grep etc. only when a tool doesn't fit.
+Do not assume paths or ids; ask once and then set config so later steps work. **Prefer book-agent tools** (run_index, run_toc, run_search, run_read, resolve_figure, config) over grep or raw file reads when doing book-related work.
 
 ## Config (do this first)
 
-- **get_config()** — Returns `current_book`, `_resolved_current_book_path`, `books`, `outputs`, `_resolved_outputs`. Use this to decide whether to prompt the user (see above).
-- **run_index(path)** — Build `index.json` in the book folder. Path is folder or .md (e.g. `inputs/book_projects/ecef4396`). **Call this first** when the folder has a .md but no index yet; then add_book and set_current_book will succeed.
-- **add_book(book_id, path)** — Add a book (path e.g. `inputs/book_projects/ecef4396`). Requires the folder to already have `index.json` and a `.md` file. If `add_book` fails with "index.json not found", call `run_index(Path(path))` to create the index, then retry `add_book`.
-- **set_current_book(book_id)** — Set the active book.
-- **set_output(key, path)** — Set where to write (e.g. `set_output("notebooks", "outputs/notebooks")`).
-- **get_book_path(book_id=None)** — Resolve current (or given) book to a folder Path.
+- **get_config()** — Returns `documents`, `output_root`, `current_workspace`, `_resolved_current_workspace_dir`, `_workspace_documents`, `_resolved_current_document_path`, `_resolved_output_dir`. Use this to decide whether to prompt the user (see above).
+- **Workspace/document:** `create_workspace(workspace_id)`, `set_current_workspace(workspace_id)`, `add_document(doc_id, path)`, `add_document_to_workspace(workspace_id, doc_id)`, `remove_document_from_workspace(workspace_id, doc_id)`, `set_workspace_current_document(workspace_id, doc_id)`, `set_workspace_output_subdir(workspace_id, key, subdir)`.
+- **Backward-compat:** `add_book(book_id, path)`, `set_current_book(book_id)`, `set_output(key, path)` — same behaviour via workspace model.
+- **Resolution:** `get_document_path_for_agent(doc_id=None)` (or `get_book_path(book_id=None)`) — current document path for toc/search/read/figure when path is omitted.
+- **run_index(path)** — Build `index.json` in the book folder. Path is folder or .md. Optional if path resolution will auto-create index.
 
-When using toc/search/read/figure, **pass path only if the user gave one**; otherwise use current book from config (`path=None`).
+When using toc/search/read/figure, **pass path only if the user gave one**; otherwise use current document from config (`path=None`).
 
-When creating or saving **notebooks or other artifacts**, use only **configured output paths** from `get_config()["_resolved_outputs"]`. If that's empty, ask the user (see above) and set it.
+When creating or saving **notebooks or other artifacts**, use **`get_config()["_resolved_output_dir"]`** (workspace root or subdir). If that's null, ask the user and set up a current workspace (see above).
 
 ## Markdown and math (for generated content)
 
@@ -55,35 +53,43 @@ When writing **Markdown** (e.g. summaries, study guides, docs under outputs):
 ```python
 from pathlib import Path
 from book_agent.agent_tools import (
-    get_config, get_book_path, set_current_book, add_book, set_output,
+    get_config, get_document_path_for_agent, get_book_path,
+    set_current_workspace, add_document, create_workspace, add_document_to_workspace, set_workspace_current_document,
+    set_current_book, add_book, set_output,  # backward-compat
     run_index, run_toc, run_search, run_read, resolve_figure, get_figure_for_agent,
 )
 config = get_config()
-# If book folder has no index.json: run_index(Path("inputs/book_projects/ecef4396")) first
-# If no current book: ask user for path + id → run_index(path) if needed → add_book + set_current_book
-# If no output path: ask user → set_output("notebooks", path)
-run_index(Path("inputs/book_projects/ecef4396"))  # when folder has .md but no index
+# If no current document: ask user → add_document(id, path) → create_workspace(id) if needed → add_document_to_workspace(id, id) → set_current_workspace(id) → set_workspace_current_document(id, id)
+# Or: add_book(id, path) and set_current_book(id)
+# If no output dir: set up current workspace (above). Optionally set_workspace_output_subdir(ws, "notebooks", "notebooks")
 run_toc(path=None, depth=2)
 run_search(path=None, query="...")
 run_read(path=None, query="...")
-resolve_figure(get_book_path(None), figure_ref)
+resolve_figure(get_document_path_for_agent(None), figure_ref)
 ```
 
 ## Workflow (e.g. "start over" or "work on a chapter")
 
 1. Call `get_config()`.
-2. If no current book (or empty books): ask user for book path and id. Then **create index if missing:** if that folder has no `index.json`, call `run_index(Path(path))` to build it. Then `add_book(id, path)` and `set_current_book(id)`.
-3. If you need to write and outputs are empty: ask user for output path (e.g. `outputs/notebooks`) → `set_output("notebooks", path)`.
-4. Use **run_toc, run_search, run_read** (and run_index when needed) for book content; prefer these over grep/raw file reads. Write only under `_resolved_outputs`.
+2. If no current workspace or no current document: ask user for document path and id. Then `add_document(id, path)`; create workspace if needed (`create_workspace(id)`), `add_document_to_workspace(id, id)`, `set_current_workspace(id)`, `set_workspace_current_document(id, id)`. Or use `add_book(id, path)` and `set_current_book(id)`.
+3. If you need to write and `_resolved_output_dir` is null: set up current workspace (step 2); optionally `set_workspace_output_subdir(workspace_id, "notebooks", "notebooks")`.
+4. Use **run_toc, run_search, run_read** (and run_index when needed) for book content; write only under `_resolved_output_dir`.
 
 ## CLI
 
 ```bash
 book-agent config show
+book-agent config set-current-workspace <id>
+book-agent config add-document <id> <path>
+book-agent config create-workspace <id>
+book-agent config add-to-workspace <workspace_id> <doc_id>
+book-agent config set-workspace-current <workspace_id> [doc_id]
+book-agent config set-output-subdir <workspace_id> <key> <subdir>
+# Backward-compat:
 book-agent config add-book <id> <path>
 book-agent config set-current <id>
 book-agent config set-output <key> <path>
-book-agent index [path]   # build index.json; pass path when folder has no index yet
+book-agent index [path]
 book-agent toc [path] [--depth N]
 book-agent search "<query>" [path]
 book-agent read "<section title>" [path]
@@ -91,4 +97,4 @@ book-agent figure resolve <figure_ref> [path]
 book-agent figure show <figure_ref> [path]
 ```
 
-Paths: user may use e.g. `inputs/book_projects/<slug>/` for books and `outputs/` or `outputs/notebooks` for outputs. Do not assume; use config and ask when missing.
+Paths: user may use e.g. `inputs/book_projects/<slug>/` for documents and `outputs/<workspace_id>/` for outputs. Do not assume; use config and ask when missing.
