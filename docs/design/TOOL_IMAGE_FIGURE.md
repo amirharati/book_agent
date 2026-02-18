@@ -45,8 +45,8 @@
 
 ## 5. Implemented surface
 
-- **Resolve:** `resolve_figure(book_folder, figure_ref)` → `{ ok, path, error }`. CLI: `book-agent figure resolve <path> <figure_ref>`.
-- **For agent:** `get_figure_for_agent(book_folder, figure_ref, include_image=True)` → `{ ok, path, prompt, image_base64?, image_media_type?, error? }`. CLI: `book-agent figure show <path> <figure_ref>` (option: `--no-image`).
+- **Resolve:** `resolve_figure(book_folder, figure_ref)` → `{ ok, path, error }`. CLI: `book-agent figure resolve <figure_ref> [path]` (path optional = current book from config).
+- **For agent:** `get_figure_for_agent(book_folder, figure_ref, include_image=True)` → `{ ok, path, prompt, image_base64?, image_media_type?, error? }`. CLI: `book-agent figure show <figure_ref> [path]` (option: `--no-image`).
 - **Entry point:** All exposed via `book_agent.agent_tools` (resolve_figure, get_figure_for_agent, figure_app).
 
 ---

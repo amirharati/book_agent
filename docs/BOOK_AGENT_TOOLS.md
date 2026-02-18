@@ -10,6 +10,11 @@ This document describes how to use the book-agent **toc**, **search**, and **rea
   - `index.json` (built with `book-agent index <path>`)
   - At least one `.md` file (the full book or chapter markdown)
 - Path can be the **folder**, the **index.json** file, or the **.md** file; the tool resolves to the folder and finds `index.json` and the main `.md` automatically.
+- If the folder has a `.md` file but **no index yet**, run **`book-agent index <path>`** (or use `run_index(path)` from `agent_tools`) to build `index.json` first; then toc/search/read will work.
+
+### Config (optional)
+
+A config file (`.book_agent.json` in the current working directory, or path in env `BOOK_AGENT_CONFIG`) can define **books** (id → path), **current_book**, and **outputs** (e.g. where to write notebooks). If you set a current book, you can omit the path argument for toc/search/read/figure and they will use the current book. See `book-agent config show`, `config set-current`, `config add-book`, `config set-output`. No assumed input/output locations; you add books and set outputs as needed. Common layouts: book folders under e.g. `inputs/book_projects/<slug>/`, outputs under e.g. `outputs/` or `outputs/notebooks/`. The agent (Cursor rule) will ask you when current book or output path is null or empty.
 
 ---
 
@@ -142,8 +147,8 @@ If no section matches, the command prints an error and exits with code 1.
 **Commands:**
 
 ```bash
-book-agent figure resolve <path> <figure_ref>
-book-agent figure show <path> <figure_ref> [--no-image]
+book-agent figure resolve <figure_ref> [path]
+book-agent figure show <figure_ref> [path] [--no-image]
 ```
 
 - **figure_ref:** Filename (e.g. `_page_0_Figure_0.jpeg`) or markdown-style `![](_page_0_Figure_0.jpeg)`.
@@ -152,8 +157,9 @@ book-agent figure show <path> <figure_ref> [--no-image]
 **Examples:**
 
 ```bash
-book-agent figure resolve book_projects/ecef4396 _page_0_Figure_0.jpeg
-book-agent figure show book_projects/ecef4396 '![](_page_22_Figure_2.jpeg)'
+book-agent figure resolve _page_0_Figure_0.jpeg book_projects/ecef4396
+book-agent figure show '![](_page_22_Figure_2.jpeg)' book_projects/ecef4396
+# Or omit path to use current book from config
 ```
 
 If the figure file is missing, the command prints an error and exits with code 1.
@@ -272,11 +278,12 @@ print(content)
 
 | Goal | Human (CLI) | AI (CLI) | AI (Python) |
 |------|-------------|----------|-------------|
-| See structure + pages | `book-agent toc <path> [-d N]` | Same | `list_toc(load_index(index_path), max_depth=N)` |
+| Build index.json | `book-agent index [path]` | Same | `run_index(Path(path))` or `run_index(None)` for current book |
+| See structure + pages | `book-agent toc [path] [-d N]` | Same | `run_toc(path=None, depth=N)` or `list_toc(load_index(index_path), max_depth=N)` |
 | Find sections by topic | `book-agent search "query" <path>` | Same | `search_sections(load_index(index_path), "query")` |
 | Get section text | `book-agent read "title" <path>` | Same | `get_section_content(section, md_path)` after search |
-| Resolve figure | `book-agent figure resolve <path> <ref>` | Same | `resolve_figure(book_folder, ref)` |
-| Figure for agent (inject test) | `book-agent figure show <path> <ref>` | Same | `get_figure_for_agent(book_folder, ref)` |
+| Resolve figure | `book-agent figure resolve <ref> [path]` | Same | `resolve_figure(book_folder, ref)` |
+| Figure for agent (inject test) | `book-agent figure show <ref> [path]` | Same | `get_figure_for_agent(book_folder, ref)` |
 
 ---
 

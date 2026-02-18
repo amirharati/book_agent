@@ -12,10 +12,9 @@ from pathlib import Path
 
 import typer
 
-from book_agent.agent_tools import figure_app, run_read, run_search, run_toc
+from book_agent.agent_tools import config_app, figure_app, get_book_path, run_index, run_read, run_search, run_toc
 from book_agent.api import convert_pdf_to_markdown
 from book_agent.backends import REGISTRY
-from book_agent.markdown_index import build_index, write_index
 
 app = typer.Typer(
     name="book-agent",
@@ -97,59 +96,21 @@ def convert(
 
 @app.command("index")
 def index_cmd(
-    path: Path = typer.Argument(
-        ...,
-        help="Path to book folder (containing a .md file) or directly to the .md file",
+    path: Path | None = typer.Argument(
+        None,
+        help="Book folder or .md file (default: current book from config)",
         path_type=Path,
     ),
     verbose: bool = typer.Option(False, "-v", "--verbose", help="Print diagnostic info"),
 ) -> None:
-    """Build index.json from markdown + optional meta JSON."""
-    import logging
-    if verbose:
-        logging.basicConfig(level=logging.INFO, format="%(message)s")
-
-    path = path.resolve()
-    if path.is_file() and path.suffix.lower() == ".md":
-        md_path = path
-        folder = path.parent
-    elif path.is_dir():
-        md_files = list(path.glob("*.md"))
-        if not md_files:
-            typer.echo(f"Error: no .md file in {path}", err=True)
-            raise typer.Exit(1)
-        md_path = md_files[0]
-        folder = path
-    else:
-        typer.echo(f"Error: not a folder or .md file: {path}", err=True)
+    """Build index.json from markdown + optional meta JSON. Use the index tool so toc/search/read work."""
+    resolved = _path_or_current(path)
+    try:
+        out = run_index(resolved)
+    except ValueError as e:
+        typer.echo(str(e), err=True)
         raise typer.Exit(1)
-
-    meta_path = md_path.parent / (md_path.stem + "_meta.json")
-    if not meta_path.is_file():
-        meta_path = None
-        typer.echo("No meta JSON found, using markdown only")
-    else:
-        typer.echo(f"Meta JSON: {meta_path.name}")
-
-    index = build_index(md_path, meta_path)
-    out = folder / "index.json"
-    write_index(index, out)
-
-    # Print summary
-    n_chapters = len(index["chapters"])
-    n_annotations = len(index.get("annotations", []))
-    typer.echo(f"\nWrote {out}")
-    typer.echo(f"  Sections: {n_chapters} top-level")
-    typer.echo(f"  Pages:    {index['page_count']}")
-    typer.echo(f"  Offset:   {index.get('pdf_to_toc_offset')}")
-    typer.echo(f"  Annotations: {n_annotations}")
-
-    # Print diagnostics
-    diag = index.get("diagnostics", [])
-    if diag:
-        typer.echo("\nDiagnostics:")
-        for d in diag:
-            typer.echo(f"  {d}")
+    typer.echo(f"Wrote {out}")
 
 
 def _run_tool(run_fn, *args, **kwargs):
@@ -161,13 +122,25 @@ def _run_tool(run_fn, *args, **kwargs):
         raise typer.Exit(1)
 
 
+def _path_or_current(path: Path | None) -> Path:
+    """Resolve path; if None use current document from config. Exit with message if no path."""
+    if path is not None:
+        return path.resolve()
+    p = get_book_path(None)
+    if p is None:
+        typer.echo("No document path: set current workspace and current document (config set-current-workspace, add-to-workspace, set-workspace-current) or pass path.", err=True)
+        raise typer.Exit(1)
+    return p
+
+
 @app.command("toc")
 def toc_cmd(
-    path: Path = typer.Argument(..., help="Path to book folder or index.json", path_type=Path),
+    path: Path | None = typer.Argument(None, help="Book folder or index.json (default: current book from config)", path_type=Path),
     depth: int = typer.Option(2, "--depth", "-d", help="Max depth to display"),
 ) -> None:
     """Show Table of Contents."""
-    lines = _run_tool(run_toc, path.resolve(), depth)
+    resolved = _path_or_current(path)
+    lines = _run_tool(run_toc, resolved, depth)
     for line in lines:
         typer.echo(line)
 
@@ -175,10 +148,11 @@ def toc_cmd(
 @app.command("search")
 def search_cmd(
     query: str = typer.Argument(..., help="Search query string"),
-    path: Path = typer.Argument(..., help="Path to book folder or index.json", path_type=Path),
+    path: Path | None = typer.Argument(None, help="Book folder or index.json (default: current book from config)", path_type=Path),
 ) -> None:
     """Search for sections by title."""
-    matches = _run_tool(run_search, path.resolve(), query)
+    resolved = _path_or_current(path)
+    matches = _run_tool(run_search, resolved, query)
     if not matches:
         typer.echo("No matches found.")
         return
@@ -190,13 +164,15 @@ def search_cmd(
 @app.command("read")
 def read_cmd(
     query: str = typer.Argument(..., help="Section title (fuzzy match)"),
-    path: Path = typer.Argument(..., help="Path to book folder or index.json", path_type=Path),
+    path: Path | None = typer.Argument(None, help="Book folder or index.json (default: current book from config)", path_type=Path),
 ) -> None:
     """Read content of a specific section."""
-    content = _run_tool(run_read, path.resolve(), query)
+    resolved = _path_or_current(path)
+    content = _run_tool(run_read, resolved, query)
     typer.echo(content)
 
 
+app.add_typer(config_app, name="config")
 app.add_typer(figure_app, name="figure")
 
 

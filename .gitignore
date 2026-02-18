@@ -2,7 +2,10 @@
 book_projects/
 example_books/
 books/
-output/
+outputs/
+notebooks/
+.book_agent.json
+.book_workspace.json
 
 # Python
 __pycache__/

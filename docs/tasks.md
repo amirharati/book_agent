@@ -43,24 +43,29 @@ We do **not** need full “researcher” agents for now; lightweight search + fe
 
 We do **one tool/task at a time**. For each new tool: write a **design doc** (see §5) with decisions and plan, then implement after review.
 
-**Phase A — Add basic tools (one at a time, single book)**  
-1. Add **image/figure** tool → design doc, then implement.  
-2. Add **math** tool → design doc, then implement.  
-3. Add **web search** → design doc, then implement.  
-4. Add **web fetch** → design doc, then implement.  
-(Optional later: image generation.)
+**Order: fix structure first, then add more tools.** That way config and layout are in place before math, web search, web fetch; new tools assume “current book” and clear input/output roots.
 
-**Phase B — Structure & config (still single book)**  
-5. Add **config / workspace**: input root, output root, current book/paper.  
-6. **Restructure repo**: clear layout (input, output, code, rules/prompts). Align config with it.  
-7. **Agent workflow / orchestration**: Use toc, search, read, and figure together when answering questions or demonstrating a point (e.g. in a notebook). See §2.1 below.
+**Phase A — Basic tools (single book)**  
+1. ~~Add **image/figure** tool~~ → done (v1).  
+2. **Math**, **web search**, **web fetch** → deferred until after Phase B (design doc then implement when structure is ready).
+
+**Phase B — Structure & config first (still single book)**  
+3. Add **config / workspace**: single config file (books, current_book, outputs); tools to get/set config and to resolve book path. See [docs/design/CONFIG_AND_WORKSPACE.md](design/CONFIG_AND_WORKSPACE.md).  
+4. **Restructure repo** (optional): clear layout (input, output, code, rules). Config can point outputs to another repo (e.g. study repo).  
+5. **Agent workflow**: Get config first; toc/search/read/figure default to current book; write only to configured outputs. Rules updated per design doc. See §2.1 below.
 
 **Phase C — Multi-doc testing**  
-8. Test on **several books/papers**; fix indexing and tool behaviour.  
-9. Stabilize and document conventions.
+6. Test on **several books/papers**; fix indexing and tool behaviour.  
+7. Stabilize and document conventions.
+
+**Phase D — Remaining tools (after structure is stable)**  
+8. Add **math** tool → design doc, then implement.  
+9. Add **web search** → design doc, then implement.  
+10. Add **web fetch** → design doc, then implement.  
+(Optional later: image generation.)
 
 **Then**  
-10. **MCP** when the tool set is stable (v1).
+11. **MCP** when the tool set is stable (v1).
 
 ---
 
@@ -84,12 +89,13 @@ Before coding a new tool, we add a **single design doc** under `docs/design/` th
 
 Design docs:
 
-| Tool | Doc | Status |
-|------|-----|--------|
+| Tool / area | Doc | Status |
+|-------------|-----|--------|
 | Image / figure | [docs/design/TOOL_IMAGE_FIGURE.md](design/TOOL_IMAGE_FIGURE.md) | done (v1) |
-| Math | (next) | — |
-| Web search | (next) | — |
-| Web fetch | (next) | — |
+| **Config & workspace** | [docs/design/CONFIG_AND_WORKSPACE.md](design/CONFIG_AND_WORKSPACE.md) | design done → implement next |
+| Math | (Phase D) | — |
+| Web search | (Phase D) | — |
+| Web fetch | (Phase D) | — |
 
 ---
 

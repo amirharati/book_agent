@@ -1,44 +1,94 @@
 ---
-description: Use book-agent tools (toc, search, read, figure) when answering about the book or using book content in notebooks
+description: Use book-agent tools (config, toc, search, read, figure); ask user when config is missing or empty
 alwaysApply: true
 ---
 
 # Book-agent tools
 
-When the user asks about the **book** (e.g. "what does the book say about X?", "explain section 2.4", "add a figure to the notebook") use the book-agent tools. All tools live in `book_agent.agent_tools`; book path is usually the project folder (e.g. `book_projects/ecef4396`).
+When the user asks about the **book** or wants to do work on a chapter, use the book-agent tools. All tools live in `book_agent.agent_tools`. **Get config first** via `get_config()`; then **proactively ask the user** when values are null or empty instead of failing silently or guessing.
+
+## Proactive prompts (ask when null or empty)
+
+1. **No current book** — If `config["current_book"]` is null or `config["_resolved_current_book_path"]` is None (or `config["books"]` is empty):
+   - Ask: *"No book is set. Which book should we use? Please give me the path to the book folder (e.g. `inputs/book_projects/ecef4396`) and a short id (e.g. `bishop`), and I'll add it and set it as current."*
+   - Then call `add_book(id, path)` and `set_current_book(id)` with the user's values.
+
+2. **No output path** — If the user might want to write notebooks/artifacts and `config["outputs"]` is empty or missing the key you need (e.g. `notebooks`):
+   - Ask: *"Where should I write notebooks (and other outputs)? For example `outputs/notebooks` or `outputs/chapters`. Tell me the path and I'll set it."*
+   - Then call `set_output("notebooks", path)` (or the key they prefer) with the user's path.
+
+3. **Index missing** — Before using toc/search/read (or before add_book), the book folder must have `index.json`. If you have the book path and that folder has no `index.json`:
+   - **Use the index tool:** call `run_index(Path(path))` (from `book_agent.agent_tools`) to create `index.json`. Do not skip this; toc/search/read require it.
+   - If the user hasn't given a path yet, ask for the book folder path, then run `run_index(Path(path))`, then proceed with add_book and set_current_book.
+
+Do not assume paths or ids; ask once and then set config so later steps work. **Prefer book-agent tools** (run_index, run_toc, run_search, run_read, resolve_figure, config) over grep or raw file reads when doing book-related work; use grep etc. only when a tool doesn't fit.
+
+## Config (do this first)
+
+- **get_config()** — Returns `current_book`, `_resolved_current_book_path`, `books`, `outputs`, `_resolved_outputs`. Use this to decide whether to prompt the user (see above).
+- **run_index(path)** — Build `index.json` in the book folder. Path is folder or .md (e.g. `inputs/book_projects/ecef4396`). **Call this first** when the folder has a .md but no index yet; then add_book and set_current_book will succeed.
+- **add_book(book_id, path)** — Add a book (path e.g. `inputs/book_projects/ecef4396`). Requires the folder to already have `index.json` and a `.md` file. If `add_book` fails with "index.json not found", call `run_index(Path(path))` to create the index, then retry `add_book`.
+- **set_current_book(book_id)** — Set the active book.
+- **set_output(key, path)** — Set where to write (e.g. `set_output("notebooks", "outputs/notebooks")`).
+- **get_book_path(book_id=None)** — Resolve current (or given) book to a folder Path.
+
+When using toc/search/read/figure, **pass path only if the user gave one**; otherwise use current book from config (`path=None`).
+
+When creating or saving **notebooks or other artifacts**, use only **configured output paths** from `get_config()["_resolved_outputs"]`. If that's empty, ask the user (see above) and set it.
+
+## Markdown and math (for generated content)
+
+When writing **Markdown** (e.g. summaries, study guides, docs under outputs):
+
+- **Math must use standard KaTeX/MathJax delimiters** so it renders in common previews (VS Code, GitHub, Obsidian, etc.):
+  - **Inline math**: `$...$` (single dollar signs). Example: `$\mathbf{w}$`, `$\sin(2\pi x)$`.
+  - **Display/block math**: `$$...$$` (double dollar signs, typically on their own lines). Example:
+    ```markdown
+    $$
+    E(\mathbf{w}) = \frac{1}{2} \sum_{n=1}^{N} (y(x_n,\mathbf{w}) - t_n)^2.
+    $$
+    ```
+- **Do not use** LaTeX-style delimiters in Markdown: avoid `\(...\)` and `\[...\]`; they do not render in most Markdown previews.
 
 ## Tools (Python)
 
 ```python
-from book_agent.agent_tools import (
-    run_toc,      # run_toc(path, depth=2) -> list of TOC lines
-    run_search,   # run_search(path, query) -> list of section dicts
-    run_read,     # run_read(path, query) -> markdown string (first matching section)
-    resolve_figure,      # resolve_figure(book_folder, figure_ref) -> { ok, path, error }
-    get_figure_for_agent # get_figure_for_agent(book_folder, figure_ref, include_image=True) -> path, prompt, optional base64
-)
 from pathlib import Path
-path = Path("book_projects/ecef4396")  # or path from context
+from book_agent.agent_tools import (
+    get_config, get_book_path, set_current_book, add_book, set_output,
+    run_index, run_toc, run_search, run_read, resolve_figure, get_figure_for_agent,
+)
+config = get_config()
+# If book folder has no index.json: run_index(Path("inputs/book_projects/ecef4396")) first
+# If no current book: ask user for path + id → run_index(path) if needed → add_book + set_current_book
+# If no output path: ask user → set_output("notebooks", path)
+run_index(Path("inputs/book_projects/ecef4396"))  # when folder has .md but no index
+run_toc(path=None, depth=2)
+run_search(path=None, query="...")
+run_read(path=None, query="...")
+resolve_figure(get_book_path(None), figure_ref)
 ```
 
-- **toc:** List structure (chapters/sections). Use to see what’s in the book.
-- **search:** Find sections by title substring. Use before reading.
-- **read:** Get full markdown of one section (first match for query). Use to answer from content.
-- **figure:** Resolve ref (e.g. `_page_102_Figure_3.jpeg` or `![](_page_102_Figure_3.jpeg)`) to path; optionally get base64. **You** load the image (e.g. read the file at `result["path"]`) to interpret or insert it; the tool does not describe the image.
+## Workflow (e.g. "start over" or "work on a chapter")
 
-## Workflow
+1. Call `get_config()`.
+2. If no current book (or empty books): ask user for book path and id. Then **create index if missing:** if that folder has no `index.json`, call `run_index(Path(path))` to build it. Then `add_book(id, path)` and `set_current_book(id)`.
+3. If you need to write and outputs are empty: ask user for output path (e.g. `outputs/notebooks`) → `set_output("notebooks", path)`.
+4. Use **run_toc, run_search, run_read** (and run_index when needed) for book content; prefer these over grep/raw file reads. Write only under `_resolved_outputs`.
 
-1. **Answer a question:** `run_search(path, query)` → pick section → `run_read(path, section_title)` → synthesize answer. If the section or user mentions a figure, `resolve_figure(path, ref)` then read the image file and use it in the answer or notebook.
-2. **Use a figure in a notebook:** `resolve_figure(book_folder, figure_ref)` → get `path` → read image from path and insert (e.g. markdown image or display in cell).
-
-## CLI (alternative)
+## CLI
 
 ```bash
-book-agent toc <path> [--depth N]
-book-agent search "<query>" <path>
-book-agent read "<section title>" <path>
-book-agent figure resolve <path> <figure_ref>
-book-agent figure show <path> <figure_ref>
+book-agent config show
+book-agent config add-book <id> <path>
+book-agent config set-current <id>
+book-agent config set-output <key> <path>
+book-agent index [path]   # build index.json; pass path when folder has no index yet
+book-agent toc [path] [--depth N]
+book-agent search "<query>" [path]
+book-agent read "<section title>" [path]
+book-agent figure resolve <figure_ref> [path]
+book-agent figure show <figure_ref> [path]
 ```
 
-Path can be the book folder, `index.json`, or the main `.md` file.
+Paths: user may use e.g. `inputs/book_projects/<slug>/` for books and `outputs/` or `outputs/notebooks` for outputs. Do not assume; use config and ask when missing.

@@ -6,10 +6,11 @@ Single job — all figure logic and CLI live here.
 import base64
 import re
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import typer
 
+from book_agent.config import get_document_path_for_agent
 from book_agent.path_utils import resolve_book_path
 
 figure_app = typer.Typer(help="Resolve or show book figures (for agent image-injection test).")
@@ -72,14 +73,26 @@ def get_figure_for_agent(
     return out
 
 
+def _figure_path_or_current(path: Optional[Path]) -> Path:
+    """Resolve path; if None use current document from config."""
+    if path is not None:
+        return path
+    p = get_document_path_for_agent(None)
+    if p is None:
+        typer.echo("No document path: set current workspace and current document (config set-current-workspace, add-to-workspace, set-workspace-current) or pass path.", err=True)
+        raise typer.Exit(1)
+    return p
+
+
 @figure_app.command("resolve")
 def _resolve_cmd(
-    path: Path = typer.Argument(..., help="Path to book folder or index.json", path_type=Path),
     figure_ref: str = typer.Argument(..., help="Figure ref: filename or ![](filename)"),
+    path: Optional[Path] = typer.Argument(None, help="Book folder or index.json (default: current book)", path_type=Path),
 ) -> None:
     """Resolve figure reference to absolute path."""
+    resolved = _figure_path_or_current(path)
     try:
-        _, md_path = resolve_book_path(path)
+        _, md_path = resolve_book_path(resolved)
     except ValueError as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(1)
@@ -93,13 +106,14 @@ def _resolve_cmd(
 
 @figure_app.command("show")
 def _show_cmd(
-    path: Path = typer.Argument(..., help="Path to book folder or index.json", path_type=Path),
     figure_ref: str = typer.Argument(..., help="Figure ref: filename or ![](filename)"),
+    path: Optional[Path] = typer.Argument(None, help="Book folder or index.json (default: current book)", path_type=Path),
     no_image: bool = typer.Option(False, "--no-image", help="Do not include base64 image (path + prompt only)"),
 ) -> None:
     """Output path + prompt (and optional base64 image) for agent injection test."""
+    resolved = _figure_path_or_current(path)
     try:
-        _, md_path = resolve_book_path(path)
+        _, md_path = resolve_book_path(resolved)
     except ValueError as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(1)
