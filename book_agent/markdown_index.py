@@ -162,6 +162,9 @@ def _contents_section_bounds(lines: list[str]) -> tuple[int, int] | None:
             continue
         if re.search(r'\d+\s*$', heading_text):
             continue
+        # Headings with embedded page links (#page-N) are TOC entries
+        if re.search(r'#page-\d+', heading_text):
+            continue
         end = i - 1
         break
     return (start, end)
@@ -212,7 +215,8 @@ _ROMAN_PART_RE = re.compile(
 )
 _PART_WORD_RE = re.compile(
     r'^Part\s+(One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten|'
-    r'Eleven|Twelve|\d+)\b',
+    r'Eleven|Twelve|\d+|'
+    r'I{1,3}|IV|VI{0,3}|IX|X{1,3}|XI{0,3}|XII{0,3})\b',
     re.IGNORECASE,
 )
 _DOTTED_3_RE = re.compile(r'^(\d+\.\d+\.\d+)')   # 1.2.3 → depth 3
@@ -222,6 +226,13 @@ _FRONT_BACK_RE = re.compile(
     r'acknowledgments?|about the authors?|references|afterword)',
     re.IGNORECASE,
 )
+_CHAPTER_WORD_RE = re.compile(
+    r'^chapter\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten|'
+    r'eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|'
+    r'nineteen|twenty)\b',
+    re.IGNORECASE,
+)
+_ITEM_WORD_RE = re.compile(r'^item\s+\d+\b', re.IGNORECASE)
 
 
 def _has_part_headings(rows: list[tuple[str, int]]) -> bool:
@@ -233,19 +244,26 @@ def _has_part_headings(rows: list[tuple[str, int]]) -> bool:
 
 def _mechanical_assign_depths(rows: list[tuple[str, int]]) -> list[dict]:
     """Assign depths without LLM, using title patterns.  Fast and deterministic."""
+    inside_part = False
     enriched = []
     for title, page in rows:
         s = title.strip()
-        if _DOTTED_3_RE.match(s):
-            depth = 3
+        p = 1 if inside_part else 0
+        if _ROMAN_PART_RE.match(s) or _PART_WORD_RE.match(s):
+            inside_part = True
+            depth = 1
+        elif _DOTTED_3_RE.match(s):
+            depth = 3 + p
         elif _DOTTED_2_RE.match(s):
-            depth = 2
+            depth = 2 + p
+        elif _CHAPTER_WORD_RE.match(s):
+            depth = 1 + p
         elif _CHAPTER_NUM_RE.match(s):
-            depth = 1
-        elif _ROMAN_PART_RE.match(s) or _PART_WORD_RE.match(s):
-            depth = 1
+            depth = 1 + p
         elif _FRONT_BACK_RE.match(s):
             depth = 1
+        elif _ITEM_WORD_RE.match(s):
+            depth = 2
         else:
             depth = 2
         enriched.append({"title": title, "depth": depth, "page": page})
@@ -253,19 +271,47 @@ def _mechanical_assign_depths(rows: list[tuple[str, int]]) -> list[dict]:
 
 
 def _enforce_depth_constraints(entries: list[dict]) -> list[dict]:
-    """Fix obviously wrong LLM depth assignments using structural patterns."""
+    """Override LLM depths with exact values when section numbering is unambiguous.
+
+    Tracks positional context: the part_offset only applies to entries that
+    appear *after* the first Part heading (so "1 Introduction" before Part I
+    stays at depth 1).
+    """
+    inside_part = False
     for e in entries:
         s = e["title"].strip()
         d = e["depth"]
+        p = 1 if inside_part else 0
         if _ROMAN_PART_RE.match(s) or _PART_WORD_RE.match(s):
+            inside_part = True
             if d != 1:
                 log.debug("Forcing Part heading to depth 1: %s", s)
                 e["depth"] = 1
-        elif _DOTTED_3_RE.match(s) and d < 3:
-            log.debug("Forcing N.N.N entry to depth 3: %s", s)
-            e["depth"] = 3
-        elif _DOTTED_2_RE.match(s) and d < 2:
-            log.debug("Forcing N.N entry to depth 2: %s", s)
+        elif _DOTTED_3_RE.match(s):
+            target = 3 + p
+            if d != target:
+                log.debug("Forcing N.N.N entry to depth %d: %s", target, s)
+                e["depth"] = target
+        elif _DOTTED_2_RE.match(s):
+            target = 2 + p
+            if d != target:
+                log.debug("Forcing N.N entry to depth %d: %s", target, s)
+                e["depth"] = target
+        elif _CHAPTER_WORD_RE.match(s):
+            target = 1 + p
+            if d != target:
+                log.debug("Forcing 'Chapter N' heading to depth %d: %s", target, s)
+                e["depth"] = target
+        elif _CHAPTER_NUM_RE.match(s):
+            target = 1 + p
+            if d != target:
+                log.debug("Forcing bare number entry to depth %d: %s", target, s)
+                e["depth"] = target
+        elif _FRONT_BACK_RE.match(s) and d != 1:
+            log.debug("Forcing front/back matter to depth 1: %s", s)
+            e["depth"] = 1
+        elif _ITEM_WORD_RE.match(s) and d < 2:
+            log.debug("Forcing 'Item N' entry to depth 2: %s", s)
             e["depth"] = 2
     return entries
 
@@ -709,6 +755,16 @@ def parse_contents_table(lines: list[str]) -> list[tuple[str, int]]:
             page = int(m.group(2))
             if title and len(title) >= 2:
                 rows.append((title, page))
+            continue
+
+        # --- Format 3: heading with embedded page links [text](#page-N-*) ---
+        page_link_m = re.search(r'#page-(\d+)', text)
+        if page_link_m:
+            page = int(page_link_m.group(1))
+            clean = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'\1', text)
+            title = _normalize(clean)
+            if title and len(title) >= 2:
+                rows.append((title, page))
 
     return rows
 
@@ -918,6 +974,9 @@ def _find_heading_in_range(
                 return (line_1based, i + 1)
             if h_norm.startswith("part ") and norm == h_norm[5:].strip():
                 return (line_1based, i + 1)
+            # Body "PART I" matches TOC "PART I Subtitle..." (prefix match)
+            if h_norm.startswith("part ") and norm.startswith(h_norm):
+                return (line_1based, i + 1)
         return (None, lo)
 
     # Fallback without index (shouldn't be needed in normal flow)
@@ -943,6 +1002,8 @@ def _find_heading_in_range(
         if norm == h_norm:
             return (i + 1, 0)
         if h_norm.startswith("part ") and norm == h_norm[5:].strip():
+            return (i + 1, 0)
+        if h_norm.startswith("part ") and norm.startswith(h_norm):
             return (i + 1, 0)
     return (None, 0)
 
@@ -1222,7 +1283,7 @@ def _compute_offset(
     page_markers: dict[int, int],
     lines: list[str],
 ) -> int | None:
-    """Find pdf_to_toc_offset using pre-built meta lookup."""
+    """Find pdf_to_toc_offset using pre-built meta lookup, with heading fallback."""
     candidates = []
     for title, toc_page in toc_rows:
         if toc_page <= 0:
@@ -1231,11 +1292,31 @@ def _compute_offset(
         if pdf_page:
             candidates.append(pdf_page - toc_page)
 
-    if not candidates:
-        return None
+    if candidates:
+        counts = Counter(candidates)
+        return counts.most_common(1)[0][0]
 
-    counts = Counter(candidates)
-    return counts.most_common(1)[0][0]
+    # Fallback: match TOC entries against body headings to derive offset
+    if not page_markers:
+        return None
+    head_index = _build_heading_index(lines)
+    page_cache = _build_page_cache(lines)
+    for title, toc_page in toc_rows:
+        if toc_page <= 0:
+            continue
+        found, _ = _find_heading_in_range(
+            lines, title, 1, len(lines), head_index, 0,
+        )
+        if found:
+            pg_at = _page_at_line(lines, found, page_cache)
+            if pg_at is not None and pg_at > 0:
+                candidates.append(pg_at - toc_page)
+    if candidates:
+        counts = Counter(candidates)
+        best = counts.most_common(1)[0][0]
+        log.info("Offset derived from heading matching: %d", best)
+        return best
+    return None
 
 def _resolve_pdf_page(toc_page: int, offset: int | None) -> int | None:
     if offset is None or toc_page == 0:
@@ -1647,6 +1728,8 @@ def build_index(md_path: Path, meta_path: Path | None = None) -> dict:
     if raw_toc_md:
         # Parse table mechanically first (titles + pages); LLM only assigns depths
         pre_parsed = parse_contents_table(lines)
+        # Filter self-referencing "Contents" entries from the TOC
+        pre_parsed = [(t, p) for t, p in pre_parsed if t.strip().lower() != "contents"]
         if pre_parsed:
             log.info("Parsed %d TOC entries from table. Assigning hierarchy depths...", len(pre_parsed))
         else:
@@ -1745,6 +1828,16 @@ def build_index(md_path: Path, meta_path: Path | None = None) -> dict:
         if md_start is None and pdf_page_hint is not None and pdf_page_hint in page_markers:
             md_start = page_markers[pdf_page_hint]
             diag.append(f"NO_HEADING: {title} (pdf {pdf_page_hint}) -> {md_start}")
+
+        # Retry from beginning: TOC order may not match markdown order
+        # (e.g. front matter listed before chapters but body has chapters first).
+        if md_start is None and search_after_line > 0:
+            md_start, _ = _find_heading_in_range(
+                lines, title, 1, search_after_line,
+                head_index=head_index, head_start_index=0,
+            )
+            if md_start is not None:
+                diag.append(f"OUT_OF_ORDER: {title} found at {md_start} (before search_after={search_after_line})")
 
         if md_start:
             search_after_line = md_start
