@@ -83,7 +83,11 @@ def _section_num(title: str) -> str | None:
     return m.group(1) if m else None
 
 def _strip_section_num(s: str) -> str:
-    """Strip leading section number: '1.2.3. Foo bar' → 'foo bar', '2 Bar' → 'bar'."""
+    """Strip leading section number and optional 'Chapter' prefix.
+
+    'Chapter 1 Foo' → 'foo', '1.2 Bar' → 'bar', '2 Bar' → 'bar'.
+    """
+    s = re.sub(r"^chapter\s+", "", s, flags=re.IGNORECASE)
     return re.sub(r"^\d+(\.\d+)*[.\s]*", "", s).strip()
 
 def _depth(title: str) -> int:
@@ -442,29 +446,18 @@ def _enrich_toc_from_raw_markdown_llm(
             for (t, p), d in zip(parsed_rows, all_depths)
         ])
         # Validate chunked LLM results against mechanical.  Mechanical is
-        # immune to chunk-boundary confusion, so prefer it when it produces
-        # a richer hierarchy (more depth-3) or a tighter top-level count.
+        # immune to chunk-boundary confusion, so prefer it when it already
+        # understands the hierarchy (i.e. produces all 3 depth levels).
         has_parts = _has_part_headings(parsed_rows)
         if not has_parts:
             mech_result = _mechanical_assign_depths(parsed_rows)
-            llm_top = sum(1 for e in llm_result if e["depth"] == 1)
             mech_top = sum(1 for e in mech_result if e["depth"] == 1)
-            llm_d3 = sum(1 for e in llm_result if e["depth"] == 3)
             mech_d3 = sum(1 for e in mech_result if e["depth"] == 3)
-            prefer_mech = False
-            if mech_d3 > llm_d3:
-                prefer_mech = True
-                reason = f"richer hierarchy (d3: {mech_d3} vs {llm_d3})"
-            elif mech_top > llm_top:
-                prefer_mech = True
-                reason = f"more top-level ({mech_top} vs {llm_top})"
-            elif mech_top < llm_top and mech_d3 >= llm_d3:
-                prefer_mech = True
-                reason = f"tighter top-level ({mech_top} vs {llm_top})"
-            if prefer_mech:
+            if mech_d3 > 0:
                 log.info(
-                    "Mechanical depths preferred over chunked LLM: %s — using mechanical.",
-                    reason,
+                    "Mechanical depths have 3 hierarchy levels "
+                    "(d1=%d, d3=%d) — using mechanical over chunked LLM.",
+                    mech_top, mech_d3,
                 )
                 return mech_result
         return llm_result
@@ -672,6 +665,17 @@ def parse_contents_table(lines: list[str]) -> list[tuple[str, int]]:
                     page = r_val
                     page_index = i
                     break
+            # Guard: if the "page" is in the first cell but there are text
+            # cells after it, it's actually a chapter number (e.g. | 1 | Title | | |).
+            if page is not None and page_index == 0:
+                has_text_after = any(
+                    HTML_TAG_RE.sub("", cells[k]).strip()
+                    for k in range(1, len(cells))
+                    if not HTML_TAG_RE.sub("", cells[k]).strip().isdigit()
+                )
+                if has_text_after:
+                    page = None
+                    page_index = -1
             if page is not None:
                 title_parts = []
                 for k in range(page_index):
@@ -1234,7 +1238,7 @@ def _compute_offset(
     return counts.most_common(1)[0][0]
 
 def _resolve_pdf_page(toc_page: int, offset: int | None) -> int | None:
-    if offset is None:
+    if offset is None or toc_page == 0:
         return None
     return toc_page + offset
 
@@ -1727,27 +1731,25 @@ def build_index(md_path: Path, meta_path: Path | None = None) -> dict:
     for toc_index, (title, toc_page, depth_from_llm) in enumerate(entries_with_depth):
         if toc_index > 0 and toc_index % progress_interval == 0:
             log.info("  resolved %d / %d...", toc_index, n_entries)
-        pdf_page = None
+        # pdf_page_hint is ONLY used to narrow the search window — never stored.
+        pdf_page_hint = None
         if not has_llm_pages:
-            pdf_page = _meta_pdf_page_for_fast(title, meta_lookup)
-        if pdf_page is None:
-            pdf_page = _resolve_pdf_page(toc_page, offset)
+            pdf_page_hint = _meta_pdf_page_for_fast(title, meta_lookup)
+        if pdf_page_hint is None:
+            pdf_page_hint = _resolve_pdf_page(toc_page, offset)
 
         md_start, head_start_index = _locate_heading(
-            lines, title, pdf_page, page_markers, search_after_line,
+            lines, title, pdf_page_hint, page_markers, search_after_line,
             head_index=head_index, head_start_index=head_start_index,
         )
-        if md_start is None and pdf_page and pdf_page in page_markers:
-            md_start = page_markers[pdf_page]
-            diag.append(f"NO_HEADING: {title} (pdf {pdf_page}) -> {md_start}")
+        if md_start is None and pdf_page_hint is not None and pdf_page_hint in page_markers:
+            md_start = page_markers[pdf_page_hint]
+            diag.append(f"NO_HEADING: {title} (pdf {pdf_page_hint}) -> {md_start}")
 
         if md_start:
             search_after_line = md_start
-            actual_page = _page_at_line(lines, md_start, page_cache) if page_markers else 0
-            if actual_page:
-                pdf_page = actual_page
-            if not page_markers:
-                pdf_page = None
+            # Always derive pdf_page from the actual matched line, never from the TOC.
+            pdf_page = _page_at_line(lines, md_start, page_cache) if page_markers else None
 
             depth = depth_from_llm
             if depth is None:
