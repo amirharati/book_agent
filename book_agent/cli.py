@@ -101,9 +101,18 @@ def index_cmd(
         help="Book folder or .md file (default: current book from config)",
         path_type=Path,
     ),
-    verbose: bool = typer.Option(False, "-v", "--verbose", help="Print diagnostic info"),
+    verbose: bool = typer.Option(False, "-v", "--verbose", help="Print extra diagnostic info"),
 ) -> None:
-    """Build index.json from markdown + optional meta JSON. Use the index tool so toc/search/read work."""
+    """Build index.json from markdown + optional meta JSON. TOC is enriched with LLM-inferred hierarchy by default."""
+    import logging
+    logging.getLogger("book_agent.markdown_index").setLevel(logging.INFO)
+    # Suppress httpx "HTTP Request: POST ... 200 OK" noise — the 200 arrives with headers
+    # while the body is still streaming, which is misleading.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO, format="%(message)s")
+    if verbose:
+        logging.getLogger("book_agent").setLevel(logging.DEBUG)
     resolved = _path_or_current(path)
     try:
         out = run_index(resolved)

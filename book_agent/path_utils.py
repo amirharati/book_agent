@@ -2,7 +2,11 @@
 
 from pathlib import Path
 
-from book_agent.markdown_index import build_index, write_index
+from book_agent.markdown_index import (
+    TOCEnrichmentRequiredError,
+    build_index,
+    write_index,
+)
 
 
 def resolve_folder_and_md(path: Path) -> tuple[Path, Path]:
@@ -51,7 +55,12 @@ def resolve_book_path(path: Path) -> tuple[Path, Path]:
         meta_path = md_path.parent / (md_path.stem + "_meta.json")
         if not meta_path.is_file():
             meta_path = None
-        index = build_index(md_path, meta_path)
+        try:
+            index = build_index(md_path, meta_path)
+        except TOCEnrichmentRequiredError as e:
+            raise ValueError(
+                f"index.json not found at {index_path} and could not build: {e}"
+            ) from e
         write_index(index, folder / "index.json")
         index_path = folder / "index.json"
 

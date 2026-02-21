@@ -1,9 +1,11 @@
 """
 Config and workspace: main config (documents, output_root, current_workspace) plus
 per-workspace config under output_root/<workspace_id>/.book_workspace.json.
+Tools config (how tools run: LLM model, etc.) is in a separate Python file: book_agent_tools.py.
 Paths are relative to config file directory. Document ids and workspace ids are unique and user-chosen.
 """
 
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -13,6 +15,7 @@ from book_agent.path_utils import resolve_book_path
 
 CONFIG_FILENAME = ".book_agent.json"
 WORKSPACE_CONFIG_FILENAME = ".book_workspace.json"
+TOOLS_CONFIG_FILENAME = "book_agent_tools.py"  # Python file: how tools run (LLM model, etc.)
 DEFAULT_OUTPUT_ROOT = "outputs"
 
 
@@ -43,6 +46,69 @@ def get_config_path() -> Path:
             return repo_file
         return repo_file
     return cwd_file
+
+
+# Default LLM model for TOC inference etc. (OpenRouter model id)
+DEFAULT_LLM_MODEL = "openai/gpt-4o-mini"
+
+
+def get_tools_config_path() -> Path:
+    """Path to the tools config Python file (same directory as main config)."""
+    return _config_base_path() / TOOLS_CONFIG_FILENAME
+
+
+def load_tools_config() -> Dict[str, Any]:
+    """
+    Load tools config from book_agent_tools.py. How tools run (LLM model, etc.);
+    separate from workspace/document config. Returns dict with:
+    - llm_model: default model for any tool
+    - llm_models: optional dict of tool name -> model id (e.g. {"toc": "...", "summary": "..."})
+    """
+    out: Dict[str, Any] = {"llm_model": DEFAULT_LLM_MODEL, "llm_models": {"default": DEFAULT_LLM_MODEL}}
+    path = get_tools_config_path()
+    if not path.is_file():
+        return out
+    try:
+        spec = importlib.util.spec_from_file_location("book_agent_tools", path)
+        if spec is None or spec.loader is None:
+            return out
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        default = DEFAULT_LLM_MODEL
+        if hasattr(mod, "LLM_MODEL") and isinstance(getattr(mod, "LLM_MODEL"), str):
+            default = mod.LLM_MODEL.strip() or DEFAULT_LLM_MODEL
+        out["llm_model"] = default
+        out["llm_models"] = {"default": default}
+        if hasattr(mod, "LLM_MODELS") and isinstance(getattr(mod, "LLM_MODELS"), dict):
+            for k, v in mod.LLM_MODELS.items():
+                if isinstance(v, str) and v.strip():
+                    out["llm_models"][k] = v.strip()
+    except Exception:
+        pass
+    return out
+
+
+def set_llm_model(model_id: str) -> Dict[str, Any]:
+    """Set the default LLM model. Writes/updates book_agent_tools.py."""
+    model_id = (model_id or "").strip()
+    if not model_id:
+        return {"ok": False, "error": "LLM model id cannot be empty.", "config": get_config()}
+    path = get_tools_config_path()
+    content = f'''# Book-agent tools config (how tools run). Edit as needed.
+# See docs/design/LLM_BACKEND.md for options.
+
+# Default model for all tools.
+LLM_MODEL = {repr(model_id)}
+
+# Optional: per-tool overrides (e.g. "toc", "summary"). Uncomment and edit as needed.
+# LLM_MODELS = {{"default": {repr(model_id)}, "toc": {repr(model_id)}, "summary": "anthropic/claude-3-haiku"}}
+'''
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    except OSError as e:
+        return {"ok": False, "error": str(e), "config": get_config()}
+    return {"ok": True, "config": get_config(), "tools_config": load_tools_config(), "llm_model": model_id}
 
 
 def _default_config() -> Dict[str, Any]:

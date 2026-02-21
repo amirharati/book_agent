@@ -56,6 +56,14 @@ We do **one tool/task at a time**. For each new tool: write a **design doc** (se
 7. Test on **several books/papers**; fix indexing and tool behaviour.  
 8. Stabilize and document conventions.
 
+#### Phase C test checklist (tick as you go)
+
+- [ ] **Single doc, no config** — Run index/toc/search/read with explicit path on 1–2 book folders. Confirm index builds (and has `index_version`), toc/search/read work, figure resolve works if applicable.
+- [ ] **Single doc per workspace** — For each doc: `add-document`, `create-workspace`, `add-to-workspace`, `set-workspace-current`. Run toc/search/read **without** path; confirm they use current document and output dir is workspace folder.
+- [ ] **Workspace with 2+ documents** — One workspace, add two docs, `set-workspace-current <ws> <doc_a>`, run toc/read (doc_a); switch to `set-workspace-current <ws> <doc_b>`, run toc/read (doc_b). Confirm switching current document changes which book is used.
+- [ ] **Same doc in two workspaces** — Same document id in two workspaces; switch `set-current-workspace`, run toc/read. Confirm same content, different output dir per workspace.
+- [ ] **Bug fixes** — Log and fix any issues (toc depth/format, index build, read line ranges, figure paths, config/workspace resolution). Re-test after fixes.
+
 **Phase D — Remaining tools (after structure is stable)**  
 9. Add **math** tool → design doc, then implement.  
 10. Add **web search** → design doc, then implement.  

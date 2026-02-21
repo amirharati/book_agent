@@ -14,10 +14,13 @@ dependencies = [
     "typer>=0.9.0",
     "pymupdf>=1.24.0",
     "pydantic>=2.0",
+    "openai>=1.0.0",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=7", "ruff>=0.1"]
+# Load .env for OPENROUTER_API_KEY etc. when using LLM
+env = ["python-dotenv>=1.0"]
 
 [project.scripts]
 book-agent = "book_agent.cli:main"

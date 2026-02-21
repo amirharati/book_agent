@@ -7,7 +7,12 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-from book_agent.markdown_index import INDEX_VERSION, build_index, write_index
+from book_agent.markdown_index import (
+    INDEX_VERSION,
+    TOCEnrichmentRequiredError,
+    build_index,
+    write_index,
+)
 from book_agent.path_utils import resolve_folder_and_md
 
 
@@ -31,7 +36,11 @@ def load_index(index_path: Path) -> Dict[str, Any]:
     meta_path = md_path.parent / (md_path.stem + "_meta.json")
     if not meta_path.is_file():
         meta_path = None
-    index = build_index(md_path, meta_path)
+    try:
+        index = build_index(md_path, meta_path)
+    except TOCEnrichmentRequiredError:
+        # LLM unavailable; do not overwrite index with wrong process
+        return data
     write_index(index, index_path)
     return index
 
@@ -78,8 +87,8 @@ def list_toc(index: Dict[str, Any], max_depth: int = 2) -> List[str]:
         for node in nodes:
             indent = "  " * (current_depth - 1)
             title = node.get("title", "Untitled")
-            page = node.get("pdf_page", "?")
-            lines.append(f"{indent}- {title} (p. {page})")
+            page = node.get("pdf_page")
+            lines.append(f"{indent}- {title} (p. {page if page is not None else '?'})")
             if "children" in node:
                 _recurse(node["children"], current_depth + 1)
 

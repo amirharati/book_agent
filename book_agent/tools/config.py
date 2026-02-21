@@ -29,6 +29,10 @@ def _show() -> None:
     typer.echo(f"Workspace documents: {data.get('_workspace_documents', [])}")
     typer.echo(f"Resolved current document path: {data.get('_resolved_current_document_path')}")
     typer.echo(f"Resolved output dir: {data.get('_resolved_output_dir')}")
+    tools = config_module.load_tools_config()
+    tools_path = config_module.get_tools_config_path()
+    typer.echo(f"Tools config: {tools_path} (exists: {tools_path.exists()})")
+    typer.echo(f"LLM model: {tools.get('llm_model', '(default)')}")
 
 
 @config_app.command("set-current-workspace")
@@ -119,6 +123,18 @@ def _set_output_subdir(
         typer.echo(result["error"], err=True)
         raise typer.Exit(1)
     typer.echo(f"Workspace '{workspace_id}' output '{key}' -> {subdir}")
+
+
+@config_app.command("set-llm-model")
+def _set_llm_model(
+    model_id: str = typer.Argument(..., help="OpenRouter model id (e.g. openai/gpt-4o-mini, anthropic/claude-3-haiku)"),
+) -> None:
+    """Set default LLM model for TOC inference. Writes book_agent_tools.py (or edit that file directly)."""
+    result = config_module.set_llm_model(model_id)
+    if not result["ok"]:
+        typer.echo(result["error"], err=True)
+        raise typer.Exit(1)
+    typer.echo(f"LLM model set to: {result.get('llm_model', model_id)}")
 
 
 # Backward-compat aliases
