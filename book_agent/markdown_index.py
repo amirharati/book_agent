@@ -1,15 +1,15 @@
 """
-Build an index (chapters/sections → TOC page, PDF page, md line range) from markdown + meta JSON.
+Build an index (chapters/sections → PDF page, md line range) from markdown + meta JSON.
 
 Pipeline:
   1. Parse TOC table from markdown → ordered list of (title, toc_page)
   2. Build layout model from meta JSON polygons (x/y clustering) → classify every
      meta entry as: running_header, section, subsection, margin_annotation, etc.
-  3. Compute pdf_to_toc_offset from first numbered chapter (toc_page=1 → pdf_page)
-  4. For each TOC entry: pdf_page = toc_page + offset, then find page marker {pdf_page}
-     in md and locate the heading within that page range → md_start_line
-  5. Build nested tree from depth (section number: 1→d1, 1.1→d2, 1.2.1→d3)
-  6. Also collect margin annotations (exercises, cross-refs) from meta as secondary items
+  3. For each TOC entry: match heading text directly in the markdown using a
+     progressive (forward-only) search with pre-built heading index.
+     pdf_page is always derived from the matched line position, never from TOC pages.
+  4. Build nested tree from depth (section number: 1→d1, 1.1→d2, 1.2.1→d3)
+  5. Also collect margin annotations (exercises, cross-refs) from meta as secondary items
 
 Key principle: sections are LINEAR and NON-OVERLAPPING.  end = next section at
 same-or-shallower depth.
@@ -64,17 +64,48 @@ def _roman_to_int(s: str) -> int | None:
             val += v
     return val
 
+_GREEK_MAP = {
+    "alpha": "α", "beta": "β", "gamma": "γ", "delta": "δ", "epsilon": "ε",
+    "zeta": "ζ", "eta": "η", "theta": "θ", "iota": "ι", "kappa": "κ",
+    "lambda": "λ", "mu": "μ", "nu": "ν", "xi": "ξ", "pi": "π",
+    "rho": "ρ", "sigma": "σ", "tau": "τ", "phi": "φ", "chi": "χ",
+    "psi": "ψ", "omega": "ω",
+}
+
 def _normalize(t: str) -> str:
-    """Remove markdown formatting (bold, italic) and HTML tags for fuzzy matching."""
+    """Normalize text for fuzzy heading matching.
+
+    Strips HTML, markdown formatting, LaTeX math (replacing Greek commands with
+    Unicode), collapses whitespace, and normalizes dashes.
+    """
     t = HTML_TAG_RE.sub("", t)
-    t = t.replace("**", "").replace("*", "").replace("__", "").replace("_", "")
-    t = t.replace("&", " and ")
-    # En/em dashes are separators → space so "Trading – From" matches "Trading From"
-    t = t.replace("\u2013", " ").replace("\u2014", " ")
-    # Standalone hyphen as separator: "A - B" → "A B"
-    t = re.sub(r'\s+-\s+', ' ', t)
-    # OCR line-break artifact: "Long- Short" → "Long-Short" (space only after)
-    t = re.sub(r'(?<=\S)-\s+', '-', t)
+    # Markdown bold/italic + escaped chars
+    t = t.replace("**", "").replace("__", "")
+    t = re.sub(r"\\([*_#`])", "", t)
+    t = t.replace("*", "").replace("_", " ")
+    # HTML entities
+    t = t.replace("&amp;", " and ").replace("&", " and ")
+    # LaTeX: unwrap $...$ and replace Greek with Unicode
+    t = re.sub(r"\$([^$]*)\$", r" \1 ", t)
+    for cmd, char in _GREEK_MAP.items():
+        t = t.replace(f"\\{cmd}", char)
+    t = re.sub(r"\\(?:mathbf|mathrm|mathbb|text|operatorname|overline|"
+               r"bar|hat|tilde|vec|Big|big|left|right)\b", "", t)
+    t = t.replace("\\", "")
+    t = t.replace("{", "").replace("}", "")
+    # Collapse whitespace inside parens: "( λ )" → "(λ)"
+    t = re.sub(r"\(\s+", "(", t)
+    t = re.sub(r"\s+\)", ")", t)
+    # All dash variants → hyphen
+    t = re.sub(r"[\u2010\u2011\u2012\u2013\u2014\u2015\u2212\uFE58\uFE63\uFF0D]", "-", t)
+    # Standalone hyphen separator: "A - B" → "A B"
+    t = re.sub(r"\s+-\s+", " ", t)
+    # OCR space after hyphen in compound word: "k -armed" → "k-armed"
+    t = re.sub(r"(\w)\s+-(\w)", r"\1-\2", t)
+    # OCR artifact: space before hyphen: "Long- Short" → "Long-Short"
+    t = re.sub(r"(?<=\S)-\s+", "-", t)
+    # Missing space between number and title: "16.6.1AlphaGo" → "16.6.1 AlphaGo"
+    t = re.sub(r"(\d)([A-Z])", r"\1 \2", t)
     return " ".join(t.split())
 
 def _section_num(title: str) -> str | None:
@@ -667,6 +698,10 @@ def parse_contents_table(lines: list[str]) -> list[tuple[str, int]]:
          (``Good News, Bad News 98`` or ``### 6 HOW TO USE THE INDICATORS 97``)
     Only looks inside the Contents section bounds to avoid body text.
     Returns list of (title, toc_page) in document order.
+
+    **Roman-numeral pages** (e.g. "ix") are stored as **negative** integers
+    (e.g. -9).  This signals that the page is a front-matter page number and
+    should NOT have the Arabic-page offset applied during heading resolution.
     """
     rows: list[tuple[str, int]] = []
     bounds = _contents_section_bounds(lines)
@@ -708,7 +743,7 @@ def parse_contents_table(lines: list[str]) -> list[tuple[str, int]]:
                     pass
                 r_val = _roman_to_int(p_str)
                 if r_val is not None:
-                    page = r_val
+                    page = -r_val  # negative = Roman-numeral front-matter page
                     page_index = i
                     break
             # Guard: if the "page" is in the first cell but there are text
@@ -1319,7 +1354,12 @@ def _compute_offset(
     return None
 
 def _resolve_pdf_page(toc_page: int, offset: int | None) -> int | None:
-    if offset is None or toc_page == 0:
+    if toc_page == 0:
+        return None
+    if toc_page < 0:
+        # Roman-numeral front-matter page: already ≈ physical PDF page (no offset)
+        return abs(toc_page)
+    if offset is None:
         return None
     return toc_page + offset
 
@@ -1780,17 +1820,17 @@ def build_index(md_path: Path, meta_path: Path | None = None) -> dict:
     page_markers = _build_page_marker_index(lines)
     meta_lookup = _build_meta_page_lookup(meta_entries, layout)
 
-    # 3. Offset (when TOC from meta, page_id is already pdf_page so use 0)
+    # 3. Offset (for narrowing heading search window; final pdf_page is always
+    #    derived from the matched line, never from the TOC page).
     if toc_from_meta:
         offset = 0
     else:
         offset = _compute_offset(toc_rows, meta_lookup, page_markers, lines)
-    
-    # 4. Resolve nodes: mechanical steps only (locate headings, assign ranges)
+
+    # 4. Resolve nodes: locate headings progressively, assign ranges
     nodes = []
     diag = []
     diag.append(f"Markdown: {len(lines)} lines")
-    diag.append(f"Offset: {offset}")
     if llm_toc_entries:
         diag.append("TOC from LLM (raw markdown parsed)")
 
@@ -1809,12 +1849,11 @@ def build_index(md_path: Path, meta_path: Path | None = None) -> dict:
     search_after_line = 0
     head_start_index = 0
     progress_interval = max(1, n_entries // 10)
-    # When LLM already gave us page numbers, skip expensive meta lookup entirely
     has_llm_pages = llm_toc_entries is not None
     for toc_index, (title, toc_page, depth_from_llm) in enumerate(entries_with_depth):
         if toc_index > 0 and toc_index % progress_interval == 0:
             log.info("  resolved %d / %d...", toc_index, n_entries)
-        # pdf_page_hint is ONLY used to narrow the search window — never stored.
+        # Page hint narrows the search window; never stored as the final page.
         pdf_page_hint = None
         if not has_llm_pages:
             pdf_page_hint = _meta_pdf_page_for_fast(title, meta_lookup)
@@ -1826,7 +1865,15 @@ def build_index(md_path: Path, meta_path: Path | None = None) -> dict:
             head_index=head_index, head_start_index=head_start_index,
         )
         if md_start is None and pdf_page_hint is not None and pdf_page_hint in page_markers:
-            md_start = page_markers[pdf_page_hint]
+            marker_line = page_markers[pdf_page_hint]
+            # Scan forward past the page marker to the first heading or content line
+            for scan_i in range(marker_line, min(marker_line + 15, len(lines) + 1)):
+                sl = lines[scan_i - 1].strip() if scan_i <= len(lines) else ""
+                if sl and not PAGE_MARKER_RE.match(sl) and not sl.startswith("---"):
+                    md_start = scan_i
+                    break
+            else:
+                md_start = marker_line
             diag.append(f"NO_HEADING: {title} (pdf {pdf_page_hint}) -> {md_start}")
 
         # Retry from beginning: TOC order may not match markdown order
