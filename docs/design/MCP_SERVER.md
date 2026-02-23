@@ -30,6 +30,20 @@ Map each book-agent API to one MCP tool (name and arguments):
 
 All optional `path` arguments: when omitted, use current document from config (same as CLI/Python API). The server must load config from the same place as the rest of the app (e.g. `.book_agent.json` and `BOOK_AGENT_CONFIG` env).
 
+### 2.1 Shared system for rules and MCP (avoid duplication)
+
+Rules (`.cursor/rules/book-agent.mdc`) and the MCP server both describe and use the **same tools**. To keep them in sync without maintaining two separate lists:
+
+- **Behavior:** Already shared. Both the rule (agent runs Python) and the MCP server call the same code in `book_agent.agent_tools` — so implementation is a single source of truth.
+- **Tool list (name + description):** Keep a **single canonical registry** in code (e.g. `book_agent/tool_registry.py`) that lists each tool’s MCP name, short description, and argument names. The MCP server reads this registry to register tools with consistent names and descriptions. The rule can say “tools are: get_config, toc, search, read, run_web_search, run_web_fetch, resolve_figure, … (see BOOK_AGENT_TOOLS)” and we update the rule’s list only when we add a tool; the canonical definitions live in the registry so MCP and docs don’t drift.
+- **Policy (“when to use”):** Lives only in the rule — e.g. “get config first”, “fetch default Jina”, “fall back if over limit”. The MCP server does not encode policy; it just exposes tools. So we don’t duplicate policy.
+
+**Concrete approach:** The **only file** you add to is **`book_agent/tool_registry.py`**: add one dict to **`TOOLS`** (with `name`, `description`, `args`, `python_name`) for each new tool, or one name to **`RULE_CONFIG_IMPORTS`** for a new config/setup symbol in the rule. Then run **`book-agent sync-rule`**. The MCP server (when built) will import `TOOLS` and register each entry. The usage doc [BOOK_AGENT_TOOLS.md](../BOOK_AGENT_TOOLS.md) points to this registry as the canonical list. The rule’s full import list and prose tool list are generated from the registry only.
+
+**Sync util:** Run **`book-agent sync-rule`** (or `python scripts/sync_rule_from_registry.py`) after changing the registry. It rewrites the rule’s “Tools (Python)” import list and the inline “Prefer book-agent tools (…)” list from `TOOLS`, so the rule and MCP share one source of truth.
+
+**Prompts / “when to use”:** Right now policy lives only in the rule (manually). When we implement the MCP server, we will take care of sharing prompts so rule and MCP use the same “when to use” text (e.g. from the registry or a single doc that both consume).
+
 ---
 
 ## 3. Implementation approach

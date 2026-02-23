@@ -217,6 +217,17 @@ def web_fetch_cmd(
     typer.echo(result.get("text") or "(no text extracted)")
 
 
+@app.command("sync-rule")
+def sync_rule_cmd() -> None:
+    """Update .cursor/rules/book-agent.mdc from tool registry (keeps rule and MCP in sync)."""
+    from book_agent.sync_rule import sync_rule
+
+    if sync_rule():
+        typer.echo("Updated .cursor/rules/book-agent.mdc (import block and prose tool list from registry).")
+    else:
+        typer.echo("Rule already in sync with registry.")
+
+
 app.add_typer(config_app, name="config")
 app.add_typer(figure_app, name="figure")
 

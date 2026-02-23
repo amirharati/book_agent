@@ -1,6 +1,6 @@
 # Book Agent Tools: Usage Guide
 
-This document describes how to use the book-agent **toc**, **search**, **read**, and **figure** tools—for both **humans** (CLI) and **AI agents** (CLI or Python API). **Canonical tool list, roadmap, and MVP:** [docs/tasks.md](tasks.md). **Web search** (Serper) and **web fetch** (Jina) are implemented and tested; optional API keys in `.env` for higher limits.
+This document describes how to use the book-agent **toc**, **search**, **read**, and **figure** tools—for both **humans** (CLI) and **AI agents** (CLI or Python API). **Canonical tool list (single source of truth):** `book_agent.tool_registry.TOOLS` in code; add new tools there, then run `book-agent sync-rule` to update the Cursor rule. **Roadmap and MVP:** [docs/tasks.md](tasks.md). **Web search** (Serper) and **web fetch** (Jina) are implemented and tested; optional API keys in `.env` for higher limits.
 
 ---
 

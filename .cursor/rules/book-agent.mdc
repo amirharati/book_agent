@@ -20,7 +20,7 @@ When the user asks about the **book** or wants to do work on a chapter, use the 
 
 3. **Index missing** — Before using toc/search/read, the book folder must have `index.json`. If the folder has a `.md` but no `index.json`, the tools **auto-create** the index when resolving the path; you can also call `run_index(Path(path))` explicitly. If add_document fails with "index.json not found", the path may be invalid (no .md in folder); otherwise index is built on first resolve.
 
-Do not assume paths or ids; ask once and then set config so later steps work. **Prefer book-agent tools** (run_index, run_toc, run_search, run_read, run_web_search, run_web_fetch, resolve_figure, config) over grep or raw file reads when doing book-related work.
+Do not assume paths or ids; ask once and then set config so later steps work. **Prefer book-agent tools** (config, run_toc, run_search, run_read, run_web_search, run_web_fetch, resolve_figure, get_figure_for_agent, run_index) over grep or raw file reads when doing book-related work. (Same tools are exposed via MCP when the book-agent MCP server is enabled; see docs/design/MCP_SERVER.md §2.1 for shared tool list.)
 
 **Inside Cursor:** You can use **both** book-agent tools and Cursor's other tools (e.g. web search, fetch, browser, terminal). Use book-agent for the book (toc/search/read/figure).
 
@@ -60,9 +60,8 @@ When writing **Markdown** (e.g. summaries, study guides, docs under outputs):
 from pathlib import Path
 from book_agent.agent_tools import (
     get_config, get_document_path_for_agent, get_book_path,
-    set_current_workspace, add_document, create_workspace, add_document_to_workspace, set_workspace_current_document,
-    set_current_book, add_book, set_output,  # backward-compat
-    run_index, run_toc, run_search, run_read, resolve_figure, get_figure_for_agent,
+    set_current_workspace, add_document, create_workspace, add_document_to_workspace, set_workspace_current_document, set_current_book, add_book, set_output,  # backward-compat
+    run_toc, run_search, run_read, run_web_search, run_web_fetch, resolve_figure, get_figure_for_agent, run_index,
 )
 config = get_config()
 # If no current document: ask user → add_document(id, path) → create_workspace(id) if needed → add_document_to_workspace(id, id) → set_current_workspace(id) → set_workspace_current_document(id, id)
