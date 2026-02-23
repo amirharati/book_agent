@@ -1,6 +1,6 @@
 # Agent Capabilities & Roadmap
 
-This document outlines the current capabilities of the Book Agent and the roadmap for future enhancements.
+This document outlines the current capabilities of the Book Agent and the roadmap for future enhancements. **Canonical tool list, MVP definition, and "what to implement first":** see [docs/tasks.md](tasks.md) (§1.4 MVP, §1.5–1.6 adding tools).
 
 ## Current Capabilities (Phase 1: Text Foundation)
 

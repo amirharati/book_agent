@@ -1,6 +1,6 @@
 # Book Agent Tools: Usage Guide
 
-This document describes how to use the book-agent **toc**, **search**, and **read** tools—for both **humans** (CLI) and **AI agents** (CLI or Python API).
+This document describes how to use the book-agent **toc**, **search**, **read**, and **figure** tools—for both **humans** (CLI) and **AI agents** (CLI or Python API). **Canonical tool list, roadmap, and MVP:** [docs/tasks.md](tasks.md). **Web search** (Serper) and **web fetch** (Jina) are implemented and tested; optional API keys in `.env` for higher limits.
 
 ---
 
@@ -22,6 +22,8 @@ A **main config** file (`.book_agent.json`; location via cwd, repo root, or env 
 
 If you set a current workspace and that workspace has a current document (or a single document), you can omit the path argument for toc/search/read/figure and they will use that document. Outputs go to the workspace folder (or a subdir set via `output_subdirs` in the workspace config).  
 **CLI:** `book-agent config show`, `set-current-workspace`, `add-document`, `create-workspace`, `add-to-workspace`, `set-workspace-current`, `set-output-subdir`; backward-compat: `set-current`, `add-book`, `set-output`. The agent (Cursor rule) will ask when current workspace or current document is missing.
+
+**Web search (optional):** For `book-agent web-search` / `run_web_search`, set **`SERPER_API_KEY`** in the environment (e.g. in `.env`). Get a key at [serper.dev](https://serper.dev) (2,500 free queries). If unset, the web-search command and tool will raise a clear error.
 
 ---
 
@@ -291,6 +293,12 @@ print(content)
 | Get section text | `book-agent read "title" <path>` | Same | `get_section_content(section, md_path)` after search |
 | Resolve figure | `book-agent figure resolve <ref> [path]` | Same | `resolve_figure(book_folder, ref)` |
 | Figure for agent (inject test) | `book-agent figure show <ref> [path]` | Same | `get_figure_for_agent(book_folder, ref)` |
+| Web search (outside book) | `book-agent web-search "query" [--num N]` | Same | `run_web_search(query, num=10)` |
+| Web fetch (URL → text) | `book-agent web-fetch <url> [--backend name]` | Same | `run_web_fetch(url, backend=None)` |
+
+**Web search:** Uses Serper.dev (Google Search API). Set `SERPER_API_KEY` in the environment (or `.env`). In Cursor, prefer Cursor's built-in search when available.
+
+**Web fetch:** Fetches a URL and returns main text (markdown when using Jina). Default backend **jina** (r.jina.ai) needs no API key (20 req/min); optional `JINA_API_KEY` for 200/min. Set `WEB_FETCH_BACKEND=simple` for built-in extraction, or register custom backends with `register_fetch_backend(name, fetch_fn)`.
 
 ---
 

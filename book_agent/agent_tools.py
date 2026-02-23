@@ -33,6 +33,8 @@ from book_agent.tools.index import run as run_index
 from book_agent.tools.read import run as run_read
 from book_agent.tools.search import run as run_search, search_sections
 from book_agent.tools.toc import run as run_toc
+from book_agent.tools.web_search import run_web_search
+from book_agent.tools.web_fetch import run_web_fetch, register_fetch_backend
 
 __all__ = [
     # Config / workspace
@@ -64,6 +66,9 @@ __all__ = [
     "run_toc",
     "run_search",
     "run_read",
+    "run_web_search",
+    "run_web_fetch",
+    "register_fetch_backend",
     "resolve_figure",
     "get_figure_for_agent",
     # CLI subapps

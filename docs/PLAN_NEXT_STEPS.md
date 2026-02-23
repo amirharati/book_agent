@@ -1,5 +1,7 @@
 # Plan: next steps after deep review (ecef4396)
 
+**Note:** This doc is **historical**. Index + toc/search/read/figure are implemented. For current status, roadmap, MVP, and how to add tools, see **[docs/tasks.md](tasks.md)**.
+
 **Context:** We have imported markdown + meta JSON with PDF page markers and TOC. Goal: tools so a Cursor agent can “look at chapter X”, “explain this”, “help solve / derive / code from this”. No PDF viewer wiring yet.
 
 ---

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import typer
 
-from book_agent.agent_tools import config_app, figure_app, get_book_path, run_index, run_read, run_search, run_toc
+from book_agent.agent_tools import config_app, figure_app, get_book_path, run_index, run_read, run_search, run_toc, run_web_fetch, run_web_search
 from book_agent.api import convert_pdf_to_markdown
 from book_agent.backends import REGISTRY
 
@@ -179,6 +179,42 @@ def read_cmd(
     resolved = _path_or_current(path)
     content = _run_tool(run_read, resolved, query)
     typer.echo(content)
+
+
+@app.command("web-search")
+def web_search_cmd(
+    query: str = typer.Argument(..., help="Web search query"),
+    num: int = typer.Option(10, "--num", "-n", help="Max number of results"),
+) -> None:
+    """Search the web via Serper.dev (requires SERPER_API_KEY)."""
+    try:
+        results = run_web_search(query, num=num)
+    except ValueError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1)
+    if not results:
+        typer.echo("No results.")
+        return
+    for r in results:
+        typer.echo(r["title"])
+        typer.echo(f"  {r['link']}")
+        typer.echo(f"  {r['snippet']}")
+        typer.echo()
+
+
+@app.command("web-fetch")
+def web_fetch_cmd(
+    url: str = typer.Argument(..., help="URL to fetch"),
+    backend: str = typer.Option(None, "--backend", "-b", help="Backend: simple (default), or set WEB_FETCH_BACKEND"),
+) -> None:
+    """Fetch URL and print main text (requires no key for 'simple' backend)."""
+    result = run_web_fetch(url, backend=backend or None)
+    if result.get("error"):
+        typer.echo(result["error"], err=True)
+        raise typer.Exit(1)
+    if result.get("title"):
+        typer.echo(f"# {result['title']}\n")
+    typer.echo(result.get("text") or "(no text extracted)")
 
 
 app.add_typer(config_app, name="config")

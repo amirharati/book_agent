@@ -1,5 +1,5 @@
 ---
-description: Use book-agent tools (config, toc, search, read, figure); ask user when config is missing or empty
+description: Use book-agent tools (config, toc, search, read, figure, web search, web fetch); fetch defaults to run_web_fetch (Jina), fallback to Cursor fetch if over limit/fails; ask user when config missing or empty
 alwaysApply: true
 ---
 
@@ -20,7 +20,13 @@ When the user asks about the **book** or wants to do work on a chapter, use the 
 
 3. **Index missing** — Before using toc/search/read, the book folder must have `index.json`. If the folder has a `.md` but no `index.json`, the tools **auto-create** the index when resolving the path; you can also call `run_index(Path(path))` explicitly. If add_document fails with "index.json not found", the path may be invalid (no .md in folder); otherwise index is built on first resolve.
 
-Do not assume paths or ids; ask once and then set config so later steps work. **Prefer book-agent tools** (run_index, run_toc, run_search, run_read, resolve_figure, config) over grep or raw file reads when doing book-related work.
+Do not assume paths or ids; ask once and then set config so later steps work. **Prefer book-agent tools** (run_index, run_toc, run_search, run_read, run_web_search, run_web_fetch, resolve_figure, config) over grep or raw file reads when doing book-related work.
+
+**Inside Cursor:** You can use **both** book-agent tools and Cursor's other tools (e.g. web search, fetch, browser, terminal). Use book-agent for the book (toc/search/read/figure).
+
+**Web fetch — default Jina, fallback:** Use **`run_web_fetch(url)`** (Jina) by default when you need a URL's content: it returns clean markdown and supports PDFs. If Jina fails (e.g. rate limit, timeout, or error), fall back to Cursor's fetch tool.
+
+**Web search:** Use `run_web_search(query, num=10)` when you need to search the web. If the environment has no search or it fails, use this (requires `SERPER_API_KEY` in `.env`). You can prefer Cursor's search when available to save Serper usage; fall back to `run_web_search` when unavailable or when it doesn't work.
 
 ## Config (do this first)
 
