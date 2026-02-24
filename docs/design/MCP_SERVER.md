@@ -14,21 +14,38 @@
 
 ## 2. Tools to expose
 
-Map each book-agent API to one MCP tool (name and arguments):
+Map each book-agent API to one MCP tool (name and arguments). The server exposes **19 tools** plus one prompt (`book_agent_context`).
+
+**Config and workspace (call get_config first when setting up):**
+
+| MCP tool name                        | Description                                                                 | Arguments |
+|--------------------------------------|-----------------------------------------------------------------------------|-----------|
+| `get_config`                         | Return current config (documents, workspace, resolved paths). Call first.  | —         |
+| `create_workspace`                   | Create a new workspace.                                                     | `workspace_id` |
+| `add_document`                       | Add a book/document to the registry.                                        | `doc_id`, `path` |
+| `set_current_workspace`              | Set the current workspace.                                                  | `workspace_id` |
+| `add_document_to_workspace`          | Add a document to a workspace.                                             | `workspace_id`, `doc_id` |
+| `set_workspace_current_document`     | Set which document is current in a workspace.                              | `workspace_id`, `doc_id` (optional) |
+| `set_workspace_output_subdir`        | Set output subdir (e.g. notebooks).                                         | `workspace_id`, `key`, `subdir` |
+| `remove_document_from_workspace`      | Remove a document from a workspace.                                        | `workspace_id`, `doc_id` |
+| `add_book`                           | Backward-compat: add document + set as current in same-named workspace.     | `book_id`, `path` |
+| `set_current_book`                   | Backward-compat: set current workspace and document.                       | `book_id` |
+| `set_output`                         | Backward-compat: set output subdir for current workspace.                   | `key`, `path` |
+
+**Book content and web:**
 
 | MCP tool name        | Description                          | Arguments                                                                 | Notes |
 |----------------------|--------------------------------------|---------------------------------------------------------------------------|-------|
-| `get_config`         | Return current config (resolved paths)| —                                                                         | |
 | `toc`                | Table of contents                    | `path` (optional), `depth` (optional, default 2)                           | path = null → current document |
 | `search`             | Search sections (book)               | `path` (optional), `query` (required)                                     | |
 | `read`               | Read section content                 | `path` (optional), `query` (section title, required)                      | |
-| `web_search`        | Web search (Serper)                  | `query` (required), `num` (optional, default 10)                           | |
-| `web_fetch`          | Fetch URL (Jina)                     | `url` (required), `backend` (optional)                                    | |
-| `figure_resolve`     | Resolve figure ref to path           | `path` (optional, book folder), `figure_ref` (required)                   | |
-| `figure_show`        | Figure path + prompt + optional base64| `path` (optional), `figure_ref` (required), `no_image` (optional)           | for agent image injection |
 | `index`              | Build index.json                     | `path` (optional)                                                         | |
+| `web_search`         | Web search (Serper)                  | `query` (required), `num` (optional, default 10)                           | |
+| `web_fetch`          | Fetch URL; optional save to workspace| `url` (required), `backend` (optional), `saveToSubdir`/`downloadPath` (optional, e.g. `"fetched"`) | When save param set, writes to `output_dir/<subdir>/<doc-slug>/<filename>.md`; tool derives folder and filename from URL/title. |
+| `figure_resolve`     | Resolve figure ref to path           | `path` (optional), `figure_ref` (required)                               | |
+| `figure_show`        | Figure path + prompt + optional base64| `path` (optional), `figure_ref` (required), `no_image` (optional)           | for agent image injection |
 
-All optional `path` arguments: when omitted, use current document from config (same as CLI/Python API). The server must load config from the same place as the rest of the app (e.g. `.book_agent.json` and `BOOK_AGENT_CONFIG` env).
+All optional `path` arguments: when omitted, use current document from config (same as CLI/Python API). The server loads config from `.book_agent.json` (or `BOOK_AGENT_CONFIG` env). When `cwd` is `${workspaceFolder}`, config and outputs are per-project.
 
 ### 2.1 Shared system for rules and MCP (avoid duplication)
 
@@ -121,6 +138,34 @@ Create or edit `.cursor/mcp.json` in the project root:
 **B) Global (all projects)**  
 Put the same `mcpServers` entry in `~/.cursor/mcp.json` and use a full path for `command`/`args`/`cwd` so the server runs the same way from any workspace.
 
+**C) New folder with only MCP**  
+If you use book-agent only via MCP (no Python package in the project), set `cwd` to `${workspaceFolder}` so config is created in that folder. Ensure the `command` interpreter has `book-agent[mcp]` installed.
+
+**D) One Python for all workspaces (recommended)**  
+To avoid a separate venv per project, use a **single** Python that has book-agent installed (e.g. this repo’s venv) and keep `cwd` as `${workspaceFolder}`:
+
+```json
+{
+  "mcpServers": {
+    "book-agent": {
+      "command": "/absolute/path/to/book_agent/.venv/bin/python",
+      "args": ["-m", "book_agent.mcp_server"],
+      "cwd": "${workspaceFolder}",
+      "env": { "BOOK_AGENT_CONFIG": "${workspaceFolder}/.book_agent.json" }
+    }
+  }
+}
+```
+
+Replace `/absolute/path/to/book_agent` with the real path to this repo. Run `uv sync --extra mcp --extra env` once in the book_agent repo to create that `.venv`. Every workspace then uses the same Python; only `cwd` (and thus `.book_agent.json` and outputs) changes per project.
+
+**Companion rule (recommended)**  
+So the agent knows *when* to use book-agent tools and what “add a book” / “create workspace” mean, copy a **rule file** into the project’s `.cursor/rules/` alongside `mcp.json`. From this repo, copy:
+
+- **`.cursor/rules/book-agent-mcp.mdc`** — MCP-only policy: call `get_config` first, use MCP tool names (get_config, create_workspace, add_document, toc, search, read, …), and proactive prompts when config is empty. No Python imports.
+
+Then the agent has both the tools (from the MCP server) and the policy (from the rule). If book-agent tools don’t appear in a chat, the rule suggests the user check MCP connection or use the **book_agent_context** prompt.
+
 **Restart:** Fully quit and reopen Cursor after changing MCP config so the server is picked up.
 
 ---
@@ -163,10 +208,10 @@ Put the same `mcpServers` entry in `~/.cursor/mcp.json` and use a full path for 
 
 | Step | Action |
 |------|--------|
-| 1 | Add optional dependency `mcp`; implement `book_agent/mcp_server.py` with FastMCP, stdio (and optionally streamable HTTP). |
-| 2 | Expose tools: get_config, toc, search, read, web_search, web_fetch, figure_resolve, figure_show, index. |
-| 3 | Configure Cursor: `.cursor/mcp.json` (or global) with command `python -m book_agent.mcp_server`, restart Cursor. |
-| 4 | Test in Cursor: use chat to call MCP tools and compare with rule-based Python/CLI behavior. |
-| 5 | Test outside: MCP Inspector (or another client) list and call tools; run at least get_config, toc, read, and optionally web_search/web_fetch. |
+| 1 | Install: `uv sync --extra mcp --extra env` (or `pip install -e ".[env,mcp]"`) in the book_agent repo. |
+| 2 | MCP server exposes 19 tools (config/workspace + toc, search, read, web_search, web_fetch, figure_*, index) and one prompt (book_agent_context). |
+| 3 | Configure client: `.cursor/mcp.json`. One Python for all workspaces: `command` = path to `book_agent/.venv/bin/python`, `cwd` = `${workspaceFolder}`, `env.BOOK_AGENT_CONFIG` = `${workspaceFolder}/.book_agent.json`. See §4 D. |
+| 4 | Optional: copy `.cursor/rules/book-agent-mcp.mdc` into the project `.cursor/rules/`. Restart Cursor after config changes. |
+| 5 | web_fetch with saveToSubdir: saves to `output_dir/<subdir>/<doc-slug>/<filename>.md`. See [TOOL_WEB_FETCH.md](TOOL_WEB_FETCH.md). |
 
-Once this is done, we can point to this doc from `docs/tasks.md` and from the README as the “MCP server” section.
+README and [BOOK_AGENT_TOOLS.md](../BOOK_AGENT_TOOLS.md) point here for full MCP setup and usage.

@@ -1,6 +1,6 @@
 # Book Agent Tools: Usage Guide
 
-This document describes how to use the book-agent **toc**, **search**, **read**, and **figure** tools—for both **humans** (CLI) and **AI agents** (CLI or Python API). **Canonical tool list (single source of truth):** `book_agent.tool_registry.TOOLS` in code; add new tools there, then run `book-agent sync-rule` to update the Cursor rule. **Roadmap and MVP:** [docs/tasks.md](tasks.md). **Web search** (Serper) and **web fetch** (Jina) are implemented and tested; optional API keys in `.env` for higher limits.
+This document describes how to use the book-agent **toc**, **search**, **read**, **figure**, **config/workspace**, **web search**, and **web fetch** tools—for both **humans** (CLI) and **AI agents** (CLI, Python API, or **MCP**). **Canonical tool list:** `book_agent.tool_registry.TOOLS`; run `book-agent sync-rule` to update the Cursor rule. **MCP server:** All tools are exposed via the Model Context Protocol for Cursor and other clients; see [docs/design/MCP_SERVER.md](design/MCP_SERVER.md) for install and config (same repo or any project). **Web fetch** can save fetched pages to the workspace output; see [TOOL_WEB_FETCH.md](design/TOOL_WEB_FETCH.md).
 
 ---
 
@@ -298,7 +298,7 @@ print(content)
 
 **Web search:** Uses Serper.dev (Google Search API). Set `SERPER_API_KEY` in the environment (or `.env`). In Cursor, prefer Cursor's built-in search when available.
 
-**Web fetch:** Fetches a URL and returns main text (markdown when using Jina). Default backend **jina** (r.jina.ai) needs no API key (20 req/min); optional `JINA_API_KEY` for 200/min. Set `WEB_FETCH_BACKEND=simple` for built-in extraction, or register custom backends with `register_fetch_backend(name, fetch_fn)`.
+**Web fetch:** Fetches a URL and returns main text (markdown when using Jina). Default backend **jina** (r.jina.ai) needs no API key (20 req/min); optional `JINA_API_KEY` for 200/min. Set `WEB_FETCH_BACKEND=simple` for built-in extraction, or register custom backends with `register_fetch_backend(name, fetch_fn)`. **Saving to disk:** When a workspace output dir is set, pass `download_path` or `save_to_subdir` (e.g. `"fetched"`); the tool writes to `output_dir/<subdir>/<doc-slug>/<filename>.md`, creating the per-document folder and deriving the filename from the URL or page title. See [TOOL_WEB_FETCH.md](design/TOOL_WEB_FETCH.md).
 
 ---
 
@@ -308,3 +308,10 @@ print(content)
 - **PDF page numbers** in the index and in tool output are 0-based (first page = 0 in the PDF file).
 - **Markdown line numbers** are 1-based; ranges are `[md_start_line, md_end_line)` (start inclusive, end exclusive).
 - The **path** argument for the CLI can be the book folder, `index.json`, or a `.md` file in that folder; the tool infers the folder and finds `index.json` and the main `.md` automatically.
+
+---
+
+## See also
+
+- **[MCP server](design/MCP_SERVER.md)** — Install, configure (same repo or any project), and use all tools from Cursor or other MCP clients; companion rule and one-Python-for-all-workspaces setup.
+- **[Web fetch design](design/TOOL_WEB_FETCH.md)** — Save fetched pages to workspace output; subdir and per-document folder behaviour.

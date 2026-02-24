@@ -1,5 +1,28 @@
-# Core dependencies (also in pyproject.toml)
-typer[all]>=0.9.0
+# Book-agent dependencies (install on new machines with: pip install -r requirements.txt && pip install -e .)
+# See pyproject.toml for optional groups: dev, env, mcp. Full install: pip install -e ".[env,mcp]"
+
+# -----------------------------------------------------------------------------
+# Core (required for CLI, convert, config, index, toc/search/read, LLM)
+# -----------------------------------------------------------------------------
+typer>=0.9.0
 pymupdf>=1.24.0
 pydantic>=2.0
 openai>=1.0.0
+
+# -----------------------------------------------------------------------------
+# Optional: .env loading (SERPER_API_KEY, OPENROUTER_API_KEY, JINA_API_KEY)
+# Uncomment for web search, OpenRouter LLM, and Jina web fetch without setting env manually.
+# -----------------------------------------------------------------------------
+python-dotenv>=1.0
+
+# -----------------------------------------------------------------------------
+# Optional: MCP server (expose tools via Model Context Protocol for Cursor, etc.)
+# Uncomment to run: python -m book_agent.mcp_server
+# -----------------------------------------------------------------------------
+mcp>=1.0.0
+
+# -----------------------------------------------------------------------------
+# Optional: dev (tests, lint). Omit these for production/CI if not needed.
+# -----------------------------------------------------------------------------
+pytest>=7
+ruff>=0.1

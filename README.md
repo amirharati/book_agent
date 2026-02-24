@@ -1,44 +1,118 @@
 # Book Agent
 
-Tools and agents to **read**, **learn**, and **apply** content from books: work from Markdown (page/chapter mapping, index) and use Cursor or other agents to study and build from the material.
-
-**Input:** Markdown can be produced externally (e.g. your own PDF→Markdown pipeline) or via the built-in PyMuPDF backend. Output layout: `book_projects/<slug>/md/`, `figures/`, `index.json`, `meta.json`.
-
-Currently, I am using Marker :https://github.com/datalab-to/marker 
-
-
-See [PROJECT.md](PROJECT.md) for the high-level plan. Details in [docs/PHASE1_MARKDOWN_CONVERSION.md](docs/PHASE1_MARKDOWN_CONVERSION.md).
-
-**Book index and reading tools:** After conversion (or if you have existing Markdown + meta), run `book-agent index <path>` to build `index.json`. Then use `toc`, `search`, and `read` to browse and read sections from the CLI or from an AI agent. Full usage for both humans and AI: **[docs/BOOK_AGENT_TOOLS.md](docs/BOOK_AGENT_TOOLS.md)**.
+Use **Cursor** (or any MCP chat client) to **talk with your books**: add Markdown documents to a workspace, then ask for help on chapters, problems, demos, or full implementations—and compare or combine multiple sources as you add more material.
 
 ---
 
-## Folder layout
+## Workflow
 
-Keep code, input data, and converted work separate:
+1. **Create a workspace** — One workspace per project or course (e.g. “ml-course”, “thesis-refs”).
+2. **Add documents to it** — Each document is a **Markdown** book or paper (folder with `.md` and optional `index.json`). You can use your own PDF→Markdown pipeline (e.g. [Marker](https://github.com/datalab-to/marker)) or the built-in converter; **indexing** (table of contents, section lookup) is done by the tools—you just add the doc and the agent can index when needed.
+3. **Chat with your book** — In Cursor (or another MCP client), you talk in natural language. The agent uses the tools to open the right sections, search, read, and optionally pull in web content, then answers, writes code, or drafts from the book.
 
-| Folder | Purpose |
-|--------|---------|
-| `example_books/` | **Input:** PDFs you want to convert (e.g. books you copied here). |
-| `book_projects/` | **Output:** One subfolder per book (e.g. `book_projects/mackaybook/`, `book_projects/bishop-prml/`) with `md/`, `figures/`, `index.json`, `meta.json`. |
+No need to remember commands: you say things like “add this book”, “create a workspace”, “help me with Chapter 3”, “implement the algorithm from section 2.4”, and the agent uses the book-agent tools to do it.
 
-Converted output is written only under `book_projects/` (or whatever path you pass to `-o`).
+---
+
+## What you can do
+
+- **Get help on a chapter or section** — “Explain section 5.2”, “What does the book say about regularization?”
+- **Work through problems** — “I’m stuck on exercise 3.1”, “Walk me through the derivation in 2.3.”
+- **Create demo code** — “Write a small script that demonstrates the idea in 4.1.”
+- **Implement algorithms for real use** — “Turn the algorithm in section 6.3 into production-style code and add tests.”
+- **Compare and combine sources** — Add several books or papers to the same workspace; ask to “compare how Bishop and Goodfellow treat this” or “combine the notation from both papers.”
+- **More as we add tools** — Web fetch, search, and figure resolution are already there; new tools will extend what you can ask (e.g. quizzes, summaries, cross-references).
+
+Details and full tool list: **[docs/BOOK_AGENT_TOOLS.md](docs/BOOK_AGENT_TOOLS.md)**. High-level plan: [PROJECT.md](PROJECT.md).
+
 
 ---
 
 ## Install
 
-From the project root:
+From the project root.
 
+**With uv (recommended — one venv, no global install):**
 ```bash
+uv sync --extra mcp --extra env
+```
+This creates `.venv/` in the repo and installs the MCP server and .env support. Use `.venv/bin/python` or `uv run` to run the CLI or MCP server.
+
+**With pip (editable, all optional deps):**
+```bash
+pip install -e ".[env,mcp]"
+```
+
+**Minimal (core only):**
+```bash
+pip install -r requirements.txt
 pip install -e .
 ```
 
-Optional dev deps:
-
+**With dev deps (tests, lint):**
 ```bash
-pip install -e ".[dev]"
+uv sync --extra dev --extra mcp --extra env
+# or: pip install -e ".[dev,env,mcp]"
 ```
+
+Dependencies are in `pyproject.toml` (core + optional `env`, `mcp`, `dev`).
+
+---
+
+## MCP server (Cursor and other clients)
+
+To **chat with your book** from Cursor (or another MCP client), add the book-agent MCP server. It exposes all tools (create workspace, add document, toc, search, read, web_fetch, web_search, figure, index) so the agent can work with your workspace and documents without you running Python yourself.
+
+### Install for MCP
+
+1. **Create the repo venv** (if using uv):
+   ```bash
+   cd /path/to/book_agent
+   uv sync --extra mcp --extra env
+   ```
+
+2. **Configure your client** (e.g. Cursor). Create or edit `.cursor/mcp.json`:
+
+**Use from this repo (book_agent as workspace):**
+```json
+{
+  "mcpServers": {
+    "book-agent": {
+      "command": "${workspaceFolder}/.venv/bin/python",
+      "args": ["-m", "book_agent.mcp_server"],
+      "cwd": "${workspaceFolder}",
+      "env": { "BOOK_AGENT_CONFIG": "${workspaceFolder}/.book_agent.json" }
+    }
+  }
+}
+```
+Requires `uv sync --extra mcp --extra env` to have been run in this repo so `.venv` exists.
+
+**Use from any other project (one Python for all workspaces):**  
+Point `command` at the book_agent repo’s venv and keep `cwd` as the current project so config and outputs are per-project:
+```json
+{
+  "mcpServers": {
+    "book-agent": {
+      "command": "/absolute/path/to/book_agent/.venv/bin/python",
+      "args": ["-m", "book_agent.mcp_server"],
+      "cwd": "${workspaceFolder}",
+      "env": { "BOOK_AGENT_CONFIG": "${workspaceFolder}/.book_agent.json" }
+    }
+  }
+}
+```
+Replace `/absolute/path/to/book_agent` with the real path to this repo. No need for a venv in each project.
+
+3. **Optional — companion rule:** Copy `.cursor/rules/book-agent-mcp.mdc` into your project’s `.cursor/rules/` so the agent knows when to use which tools (e.g. “add a book” → add_document, “create workspace” → create_workspace). See [docs/design/MCP_SERVER.md](docs/design/MCP_SERVER.md).
+
+4. **Restart Cursor** (or your MCP client) after changing `mcp.json`.
+
+**Tools exposed:** get_config, create_workspace, add_document, set_current_workspace, add_document_to_workspace, set_workspace_current_document, set_workspace_output_subdir, remove_document_from_workspace, add_book, set_current_book, set_output, toc, search, read, web_search, web_fetch, figure_resolve, figure_show, index. There is also a **book_agent_context** prompt that explains setup and “add a book” / “create workspace” to the model.
+
+**Web fetch save:** When you pass `saveToSubdir` or `downloadPath` (e.g. `"fetched"`), the tool saves the fetched page under the current workspace output in a per-document folder with an auto-generated filename. See [docs/design/TOOL_WEB_FETCH.md](docs/design/TOOL_WEB_FETCH.md).
+
+Full MCP setup, testing, and troubleshooting: **[docs/design/MCP_SERVER.md](docs/design/MCP_SERVER.md)**.
 
 ---
 
@@ -150,3 +224,10 @@ See [docs/LAYOUT_AND_CHAPTERS.md](docs/LAYOUT_AND_CHAPTERS.md) for layout extrac
 
 - Run CLI as module: `python -m book_agent.cli book.pdf -o book_projects/out`
 - Run tests: `pytest` (after `pip install -e ".[dev]"`)
+
+---
+
+## See also
+
+- **[docs/BOOK_AGENT_TOOLS.md](docs/BOOK_AGENT_TOOLS.md)** — Full usage for CLI and AI (Python API and MCP); config, toc, search, read, web_fetch, figures.
+- **[docs/design/MCP_SERVER.md](docs/design/MCP_SERVER.md)** — MCP install, config (same repo vs other project), and troubleshooting.

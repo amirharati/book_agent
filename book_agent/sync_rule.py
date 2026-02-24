@@ -21,13 +21,17 @@ def sync_rule(rule_path: Path | None = None) -> bool:
     text = path.read_text(encoding="utf-8")
 
     python_names = [t["python_name"] for t in TOOLS]
-    # Full import list: get_config first, then config helpers from registry, then tool names (excluding get_config).
+    # Full import list: get_config first, then path helpers, then all other TOOLS (excluding get_config).
     all_imports = ["get_config"] + list(RULE_CONFIG_IMPORTS) + [n for n in python_names if n != "get_config"]
 
-    line1 = "    " + ", ".join(all_imports[:3]) + ","
-    line2 = "    " + ", ".join(all_imports[3:11]) + ",  # backward-compat"
-    line3 = "    " + ", ".join(all_imports[11:]) + ","
-    import_block = "\n".join([line1, line2, line3])
+    # Split into lines (~80 chars); put backward-compat on line containing set_output.
+    lines = []
+    chunk_size = 5
+    for i in range(0, len(all_imports), chunk_size):
+        chunk = all_imports[i : i + chunk_size]
+        suffix = ",  # backward-compat" if "set_output" in chunk else ","
+        lines.append("    " + ", ".join(chunk) + suffix)
+    import_block = "\n".join(lines)
 
     pattern = re.compile(
         r"(from book_agent\.agent_tools import \()\n(.*?)(\n\))",

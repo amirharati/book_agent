@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "book-agent": {
+      "command": "./.venv/bin/python",
+      "args": ["-m", "book_agent.mcp_server"],
+      "cwd": "${workspaceFolder}",
+      "disabled": false,
+      "env": {
+        "BOOK_AGENT_CONFIG": "${workspaceFolder}/.book_agent.json"
+      }
+    }
+  }
+}

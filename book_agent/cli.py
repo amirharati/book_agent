@@ -205,16 +205,19 @@ def web_search_cmd(
 @app.command("web-fetch")
 def web_fetch_cmd(
     url: str = typer.Argument(..., help="URL to fetch"),
-    backend: str = typer.Option(None, "--backend", "-b", help="Backend: simple (default), or set WEB_FETCH_BACKEND"),
+    backend: str = typer.Option(None, "--backend", "-b", help="Backend: jina (default), simple, or set WEB_FETCH_BACKEND"),
+    download_path: str = typer.Option(None, "--download-path", "-o", help="Relative path under workspace output (e.g. fetched/doc.md). Creates parent dirs."),
 ) -> None:
-    """Fetch URL and print main text (requires no key for 'simple' backend)."""
-    result = run_web_fetch(url, backend=backend or None)
+    """Fetch URL and print main text. Saves under workspace output when set (use --download-path for custom path)."""
+    result = run_web_fetch(url, backend=backend or None, download_path=download_path or None)
     if result.get("error"):
         typer.echo(result["error"], err=True)
         raise typer.Exit(1)
     if result.get("title"):
         typer.echo(f"# {result['title']}\n")
     typer.echo(result.get("text") or "(no text extracted)")
+    if result.get("saved_path"):
+        typer.echo(f"\nSaved to: {result['saved_path']}", err=True)
 
 
 @app.command("sync-rule")

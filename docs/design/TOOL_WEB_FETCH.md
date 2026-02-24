@@ -16,8 +16,8 @@
 ## 2. Scope
 
 - **Input:** URL (string); optional params (e.g. max_length, backend name).
-- **Output:** Dict with at least `text` (str), optionally `title`, `url`, `error` (if failed). Plain text or structured for agent.
-- **No book path:** This tool does not use the current document.
+- **Output:** Dict with at least `text` (str), optionally `title`, `url`, `error` (if failed), and `saved_path` (str or None). When a workspace output dir is set, the fetched document is saved to `{output_dir}/fetches/<slug>/content.md` and `saved_path` is set to that path.
+- **No book path:** This tool does not use the current document. It does use the current workspace output dir (from config) for saving when available.
 
 ---
 
@@ -46,8 +46,8 @@
 | **Default backend** | `jina` | Jina Reader (r.jina.ai); no key required. Optional `JINA_API_KEY` for higher limits. |
 | **Other backends** | `simple`, `bright_data` | Set `WEB_FETCH_BACKEND=simple` or register Bright Data and set `WEB_FETCH_BACKEND=bright_data`. |
 | **CLI** | `book-agent web-fetch <url> [--backend name]` | |
-| **API** | `run_web_fetch(url, backend=None) -> dict` | Returns `{"text", "title?", "url", "error?"}`. |
-| **Output** | Main body text only (no HTML). Optional max length. | |
+| **API** | `run_web_fetch(url, backend=None) -> dict` | Returns `{"text", "title?", "url", "error?", "saved_path?"}`. |
+| **Output** | Main body text only (no HTML). Optional max length. When output dir set, also writes to `output_dir/fetches/<slug>/content.md`. | |
 
 ---
 
@@ -61,7 +61,20 @@
 
 ---
 
-## 6. Later
+## 6. Save under output (implemented)
+
+When the current workspace has an output dir (`get_config()["_resolved_output_dir"]` or `get_output_dir()`), a successful fetch is written to a file. **Parent directories are always created** with `path.parent.mkdir(parents=True, exist_ok=True)` before writing.
+
+- **Path resolution:** Save path is always under the workspace output dir (`_resolved_output_dir` from config / `get_output_dir_path()`). No cwd or paths outside the workspace output.
+- **Default (no save param):** `{output_dir}/fetches/<slug>/content.md`. Slug is derived from URL (netloc + path, sanitized, plus short hash).
+- **Subdir-only save:** When `download_path` or `save_to_subdir` is set (e.g. `"fetched"`), it is treated as a **subdir name only**. The tool creates `{output_dir}/{subdir}/` and writes a file with an **auto-generated filename** derived from the URL or page title (e.g. `coursera-rlhf.md` from `https://www.coursera.org/articles/rlhf` or from the fetched `<title>`). The subdir is created if it does not exist. The agent/user does not supply the filename; the tool owns creating the subfolder and choosing the filename.
+- **Content:** Markdown: title as `# Title` if present, then body text. Return dict includes `saved_path` with the resolved file path (or `saved_path: null` if no output dir or fetch failed).
+- **No workspace:** If there is no current workspace or `_resolved_output_dir` is null, content is returned but no file is written; `saved_path` is None.
+- **API:** `run_web_fetch(url, backend=None, download_path=None, save_to_subdir=None)`. CLI: `book-agent web-fetch <url> [--download-path subdir]`. MCP: `web_fetch(url, backend?, download_path?, downloadPath?, saveToSubdir?)`.
+
+---
+
+## 7. Later
 
 - Optional summarization (LLM) of long pages.
 - **trafilatura** as optional dependency for better extraction.

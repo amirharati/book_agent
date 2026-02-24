@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Book Agent" }]
+# Core: CLI (typer), PDF conversion (pymupdf), config/models (pydantic), LLM (openai)
 dependencies = [
     "typer>=0.9.0",
     "pymupdf>=1.24.0",
@@ -18,9 +19,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Tests and linting
 dev = ["pytest>=7", "ruff>=0.1"]
-# Load .env for OPENROUTER_API_KEY etc. when using LLM
+# Load .env for SERPER_API_KEY, OPENROUTER_API_KEY, JINA_API_KEY (web search, LLM, web fetch)
 env = ["python-dotenv>=1.0"]
+# MCP server: expose tools via Model Context Protocol (Cursor, Inspector, etc.)
+mcp = ["mcp>=1.0.0"]
 
 [project.scripts]
 book-agent = "book_agent.cli:main"

@@ -319,7 +319,7 @@ def get_document_path_for_agent(doc_id: Optional[str] = None) -> Optional[Path]:
 
 
 def get_output_dir(workspace_id: Optional[str] = None, subdir_key: Optional[str] = None) -> Optional[Path]:
-    """Return directory for writing outputs. Uses workspace root or output_subdirs[subdir_key] if set."""
+    """Return directory for writing outputs. Uses workspace root or output_subdirs[subdir_key] if set. Returns None if workspace dir does not exist yet."""
     dir_path = get_workspace_dir(workspace_id)
     if dir_path is None:
         return None
@@ -333,6 +333,24 @@ def get_output_dir(workspace_id: Optional[str] = None, subdir_key: Optional[str]
     subdir = subdirs.get(subdir_key) if isinstance(subdirs, dict) else None
     if subdir:
         return (dir_path / subdir).resolve()
+    return dir_path
+
+
+def get_output_dir_path(workspace_id: Optional[str] = None, subdir_key: Optional[str] = None) -> Optional[Path]:
+    """Return the path where workspace output goes (or would go). Does not require the directory to exist; use for writing and create dirs as needed."""
+    data = load_config()
+    ws_id = workspace_id or data.get("current_workspace")
+    if not ws_id:
+        return None
+    base = _config_base_path()
+    root = data.get("output_root", DEFAULT_OUTPUT_ROOT)
+    dir_path = (base / root / ws_id).resolve()
+    if subdir_key:
+        ws = load_workspace_config(ws_id)
+        subdirs = ws.get("output_subdirs") if isinstance(ws.get("output_subdirs"), dict) else {}
+        subdir = subdirs.get(subdir_key) if subdirs else None
+        if subdir:
+            dir_path = (dir_path / subdir).resolve()
     return dir_path
 
 
