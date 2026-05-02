@@ -1,44 +1,78 @@
 ---
-description: Use book-agent tools (config, toc, search, read, figure, web search, web fetch); fetch defaults to run_web_fetch (Jina), fallback to host fetch if over limit/fails; ask user when config missing or empty
+description: "Mandatory book-agent policy: every generated book artifact under _resolved_output_dir from get_config only; forbidden writes to repo root, inputs/, or guessed paths unless the user overrides in-chat. MCP tools; get_config before artifact writes."
 alwaysApply: true
 ---
 
-# Book-agent tools
+# Book-agent tools (MCP)
 
-When the user asks about the **book** or wants to do work on a chapter, use the book-agent tools. All tools live in `book_agent.agent_tools`. **Get config first** via `get_config()`; then **proactively ask the user** when values are null or empty instead of failing silently or guessing.
+**This rule always applies** in workspaces where it is enabled—not only when the user mentions MCP.
+
+For **any** book-related session (read, explain, summarize, notebooks, exports): use **book-agent MCP tools** when they appear in the tool list. **Call `get_config` first** before relying on current workspace/document and **always before creating any book artifact** (see **Output root (hard requirement)**). Then **proactively ask** when values are null or empty—do not guess paths from memory or assume repo layout.
+
+If MCP is missing, tell the user to connect the server or use **`book-agent cursor install-mcp`** (see project docs); for reads you may fall back to CLI only after resolving paths from **`.book_agent.json`**—never invent output locations.
+
+## Output root (hard requirement)
+
+Before creating **any** new file or folder in a **book-agent workflow** (anything you generate while helping with the book, tutorial, or workspace session):
+
+Includes **notebooks**, **`.py`**, **`.md`** outputs, **images**, **JSON**, **exports**, **logs**, **temp files**, **`requirements*.txt`**, **`constraints.txt`**, **`environment.yml`**, **install helper scripts** for a notebook, **small `pyproject`/`setup` snippets** meant only for that tutorial, etc.
+
+There is **no** “repo root is fine for requirements.txt” exception: dependency lists and notebook-support files belong **under `AGENT_WRITE_ROOT`** (e.g. **`AGENT_WRITE_ROOT/requirements-notebook.txt`**) unless the user **explicitly** asks for a path outside it.
+
+1. Call **`get_config`** and set **`AGENT_WRITE_ROOT = _resolved_output_dir`** from that response. Re-call **`get_config`** before a new batch of writes if the workspace might have changed.
+2. **Same path from disk** (e.g. MCP unavailable): read **`.book_agent.json`** at the **project / workspace root** (the folder Cursor opened; the file’s directory is the config base). Then  
+   **`AGENT_WRITE_ROOT = <directory_containing_.book_agent.json> / <output_root> / <current_workspace> /`**  
+   using the JSON keys `output_root` and `current_workspace`. This **must** match `_resolved_output_dir` from **`get_config`** when both are available—prefer **`get_config`**.
+3. **All** new generated content goes **only** under **`AGENT_WRITE_ROOT`**. Nested dirs are fine (**`AGENT_WRITE_ROOT/notebooks/…`**, **`AGENT_WRITE_ROOT/src/…`**, etc.). Do **not** create sibling top-level folders like **`notebooks/`** or **`src/`** at project root—put those **inside** **`AGENT_WRITE_ROOT`** unless the user **explicitly** gives a full path that overrides this.
+4. **Do not** write new artifacts under **`inputs/`**, at **project root** (next to `inputs/` / `outputs/`), or other **top-level** dirs outside the **`outputs/<workspace_id>/`** tree unless the user **explicitly** instructs a path.
+5. If **`current_workspace`** or **`_resolved_output_dir`** is null/missing, **stop** and configure the workspace (Proactive prompts); **do not** invent another output directory.
+
+Treat registered **book** paths (`_resolved_current_document_path`) as **read-only** for generated artifacts unless the user asks to edit the book source.
+
+**Host writes** (patch, write, notebook tools, new-file dialogs): **every** path must stay under **`AGENT_WRITE_ROOT`**. Policy is **not** limited to bytes written by MCP tools—it covers **all** files you create in this chat while doing book-agent work.
+
+**Scope:** If the user is clearly editing the **library/tooling** of the `book_agent` package itself (not a book study session), normal repo layout applies—do **not** stash package code under **`outputs/`**. When the task is **read / explain / notebook / summary / exercises / tutorial tied to a registered document**, treat as book-agent workflow and enforce **`AGENT_WRITE_ROOT`**.
+
+**Project root / MCP everywhere:** One-time: run **`book-agent cursor install-mcp`** (after `pip install "book-agent[mcp]"`) so **`~/.cursor/mcp.json`** registers book-agent with **`cwd` = `${workspaceFolder}`** and **`BOOK_AGENT_CONFIG` = `${workspaceFolder}/.book_agent.json`**; restart Cursor; symlink this file to **`~/.cursor/rules/book-agent.mdc`** (`cd` to repo root, then `mkdir -p ~/.cursor/rules && ln -sf "$PWD/.cursor/rules/book-agent.mdc" ~/.cursor/rules/book-agent.mdc`) so policy stays in sync with **`book-agent sync-rule`**. Then opening **any** folder loads MCP tools; the first mutating config tool can create **`.book_agent.json`** there. If `BOOK_AGENT_CONFIG` is unset, config is found by walking **up from `cwd`** or created under **`cwd`** on first save.
 
 ## Proactive prompts (ask when null or empty)
 
-1. **No current workspace or current document** — If `config["current_workspace"]` is null, or `config["_resolved_current_document_path"]` is None (or the current workspace has no documents):
+1. **No current workspace or current document** — If the result of `get_config` has `current_workspace` null, or `_resolved_current_document_path` is null/missing (or the current workspace has no documents):
    - Ask: *"No workspace or document is set. You can create a workspace (e.g. `bishop`) and add a book: give me the path to the book folder (e.g. `inputs/book_projects/ecef4396`) and an id (e.g. `bishop`). I'll add the document, create the workspace if needed, add it to the workspace, and set it as current."*
-   - Then: `add_document(id, path)`; if workspace doesn't exist, `create_workspace(id)`; `add_document_to_workspace(id, id)`; `set_current_workspace(id)`; `set_workspace_current_document(id, id)`.
-   - **Backward-compat:** You can also use `add_book(id, path)` and `set_current_book(id)` to add a document and set a same-named workspace as current (creates workspace if missing).
+   - Then call: `add_document(doc_id, path)`; if workspace doesn't exist, `create_workspace(workspace_id)`; `add_document_to_workspace(workspace_id, doc_id)`; `set_current_workspace(workspace_id)`; `set_workspace_current_document(workspace_id, doc_id)`.
+   - **Backward-compat:** You can also use `add_book(book_id, path)` and `set_current_book(book_id)` to add a document and set a same-named workspace as current (creates workspace if missing).
 
-2. **No output dir** — Writing goes to the **current workspace** folder (`config["_resolved_output_dir"]`). If the user might want to write and there is no current workspace (so no output dir):
+2. **No output dir** — Writing goes to the **current workspace** folder (`_resolved_output_dir` in config). If the user might want to write and there is no current workspace (so no output dir):
    - Ask as in (1) to set up a workspace. Optionally set a subdir with `set_workspace_output_subdir(workspace_id, "notebooks", "notebooks")` so e.g. notebooks go to `workspace/notebooks/`.
    - **Backward-compat:** `set_output("notebooks", path)` sets the output subdir for the *current* workspace (path = subdir name under workspace root).
 
-3. **Index missing** — Before using toc/search/read, the book folder must have `index.json`. If the folder has a `.md` but no `index.json`, the tools **auto-create** the index when resolving the path; you can also call `run_index(Path(path))` explicitly. If add_document fails with "index.json not found", the path may be invalid (no .md in folder); otherwise index is built on first resolve.
+3. **Index missing** — Before using toc/search/read, the book folder must have `index.json`. If the folder has a `.md` but no `index.json`, the tools **auto-create** the index when resolving the path; you can also call `index(path)` explicitly. If add_document fails with "index.json not found", the path may be invalid (no .md in folder); otherwise index is built on first resolve.
 
-Do not assume paths or ids; ask once and then set config so later steps work. **Prefer book-agent tools** (config, create_workspace, add_document, set_current_workspace, add_document_to_workspace, set_workspace_current_document, set_workspace_output_subdir, remove_document_from_workspace, add_book, set_current_book, set_output, run_toc, run_search, run_read, run_web_search, run_web_fetch, resolve_figure, get_figure_for_agent, run_index) over grep or raw file reads when doing book-related work. (Same tools are exposed via MCP when the book-agent MCP server is enabled; see docs/design/MCP_SERVER.md §2.1 for shared tool list.)
+Do not assume paths or ids; ask once and then set config so later steps work. **Prefer book-agent MCP tools** (get_config, create_workspace, add_document, set_current_workspace, add_document_to_workspace, set_workspace_current_document, set_workspace_output_subdir, remove_document_from_workspace, add_book, set_current_book, set_output, toc, search, read, web_search, web_fetch, figure_resolve, figure_show, index) over grep or raw file reads when doing book-related work.
 
-**Host tools:** You can use **both** book-agent tools and any other tools the host provides (e.g. web search, fetch, browser, terminal). Use book-agent for the book (toc/search/read/figure).
+**Host tools:** You can use **both** book-agent MCP tools and any other tools the host provides (e.g. web search, fetch, browser, terminal). Use book-agent for the book (toc, search, read, figure_show). File writes must obey **Output root (hard requirement)** above (`AGENT_WRITE_ROOT` / **`_resolved_output_dir`**).
 
-**Web fetch — default Jina, fallback:** Use **`run_web_fetch(url)`** (Jina) by default when you need a URL's content: it returns clean markdown and supports PDFs. When a workspace output dir is set, the fetched document is saved under `output_dir/fetches/<slug>/content.md` (return includes `saved_path`). If Jina fails (e.g. rate limit, timeout, or error), fall back to the host's fetch tool if available.
+**Web fetch — default Jina, fallback:** Use **`web_fetch(url)`** (Jina) by default when you need a URL's content: it returns clean markdown and supports PDFs. When a workspace output dir is set, the fetched document is saved under `output_dir/fetches/<slug>/content.md` (response includes saved path). If Jina fails (e.g. rate limit, timeout, or error), fall back to the host's fetch tool if available.
 
-**Web search:** Use `run_web_search(query, num=10)` when you need to search the web. If the environment has no search or it fails, use this (requires `SERPER_API_KEY` in `.env`). You can prefer the host's built-in search when available to save Serper usage; fall back to `run_web_search` when unavailable or when it doesn't work.
+**Web search:** Use `web_search(query, num=10)` when you need to search the web (requires `SERPER_API_KEY` in `.env`). You can prefer the host's built-in search when available to save Serper usage; fall back to `web_search` when unavailable or when it doesn't work.
+
+If book-agent tools are **not** in your tool list, tell the user to check that the book-agent MCP server is connected (e.g. in the host's MCP or extension settings) or to use the **book_agent_context** prompt to load context.
 
 ## Config (do this first)
 
-- **get_config()** — Returns `documents`, `output_root`, `current_workspace`, `_resolved_current_workspace_dir`, `_workspace_documents`, `_resolved_current_document_path`, `_resolved_output_dir`. Use this to decide whether to prompt the user (see above).
+*(All writes: see **Output root (hard requirement)** at the top — **`AGENT_WRITE_ROOT`** = **`_resolved_output_dir`** from **`get_config`**.)*
+
+### Other config fields
+
+- **get_config** — Returns JSON with `documents`, `output_root`, `current_workspace`, `_resolved_current_workspace_dir`, `_workspace_documents`, `_resolved_current_document_path`, `_resolved_output_dir`. Use this to decide whether to prompt the user (see above).
 - **Workspace/document:** `create_workspace(workspace_id)`, `set_current_workspace(workspace_id)`, `add_document(doc_id, path)`, `add_document_to_workspace(workspace_id, doc_id)`, `remove_document_from_workspace(workspace_id, doc_id)`, `set_workspace_current_document(workspace_id, doc_id)`, `set_workspace_output_subdir(workspace_id, key, subdir)`.
 - **Backward-compat:** `add_book(book_id, path)`, `set_current_book(book_id)`, `set_output(key, path)` — same behaviour via workspace model.
-- **Resolution:** `get_document_path_for_agent(doc_id=None)` (or `get_book_path(book_id=None)`) — current document path for toc/search/read/figure when path is omitted.
-- **run_index(path)** — Build `index.json` in the book folder. Path is folder or .md. Optional if path resolution will auto-create index.
+- **Resolution:** When using toc, search, read, figure_resolve, figure_show — **omit path** (or pass null) to use the current document from config. Pass path only if the user gave one.
+- **index(path)** — Build `index.json` in the book folder. path optional (current document if null). Optional if path resolution will auto-create index.
 
-When using toc/search/read/figure, **pass path only if the user gave one**; otherwise use current document from config (`path=None`).
+When using toc, search, read, figure_resolve, figure_show, **pass path only if the user gave one**; otherwise omit path (or null) for current document from config.
 
-When creating or saving **notebooks or other artifacts**, use **`get_config()["_resolved_output_dir"]`** (workspace root or subdir). If that's null, ask the user and set up a current workspace (see above).
+When creating or saving **notebooks or other artifacts**, use **only** **`AGENT_WRITE_ROOT`** (**Output root (hard requirement)**).
 
 ## Markdown and math (for generated content)
 
@@ -54,35 +88,44 @@ When writing **Markdown** (e.g. summaries, study guides, docs under outputs):
     ```
 - **Do not use** LaTeX-style delimiters in Markdown: avoid `\(...\)` and `\[...\]`; they do not render in most Markdown previews.
 
-## Tools (Python)
+## Tools (MCP)
 
-```python
-from pathlib import Path
-from book_agent.agent_tools import (
-    get_config, get_document_path_for_agent, get_book_path, create_workspace, add_document,
-    set_current_workspace, add_document_to_workspace, set_workspace_current_document, set_workspace_output_subdir, remove_document_from_workspace,
-    add_book, set_current_book, set_output, run_toc, run_search,  # backward-compat
-    run_read, run_web_search, run_web_fetch, resolve_figure, get_figure_for_agent,
-    run_index,
-)
-config = get_config()
-# If no current document: ask user → add_document(id, path) → create_workspace(id) if needed → add_document_to_workspace(id, id) → set_current_workspace(id) → set_workspace_current_document(id, id)
-# Or: add_book(id, path) and set_current_book(id)
-# If no output dir: set up current workspace (above). Optionally set_workspace_output_subdir(ws, "notebooks", "notebooks")
-run_toc(path=None, depth=2)
-run_search(path=None, query="...")
-run_read(path=None, query="...")
-resolve_figure(get_document_path_for_agent(None), figure_ref)
-```
+Use these MCP tool names when they appear in your tool list:
+
+| MCP tool | Purpose |
+|----------|---------|
+| **get_config** | Return current book-agent config (documents, current workspace, resolved paths). Call first when user wants to work on a book or set up workspace. |
+| **create_workspace** | Create a new workspace. Use when user says 'create workspace', 'make a workspace', 'set up project'. workspace_id: unique id (e.g. 'my_project'). |
+| **add_document** | Add a book/document to the registry. Use when user says 'add a book', 'add this book', 'register document'. doc_id: short id (e.g. 'bishop'); path: path to book folder (with index.json or .md). |
+| **set_current_workspace** | Set the current workspace. Use when user wants to switch or set workspace. workspace_id must already exist (create with create_workspace). |
+| **add_document_to_workspace** | Add a document to a workspace's list. Use after add_document when user wants this book in a workspace. doc_id must be in registry. |
+| **set_workspace_current_document** | Set which document is current in a workspace. Use when user wants to 'work on' a specific book in the workspace. doc_id: document id or null to clear. |
+| **set_workspace_output_subdir** | Set an output subdirectory for a workspace (e.g. notebooks). workspace_id, key (e.g. 'notebooks'), subdir name. |
+| **remove_document_from_workspace** | Remove a document from a workspace's list. |
+| **add_book** | Backward-compat: add document and set as current in same-named workspace. Use when user says 'add a book' and want it as current. book_id and path. |
+| **set_current_book** | Backward-compat: set current workspace and current document to book_id (creates workspace if needed). |
+| **set_output** | Backward-compat: set output subdir for current workspace. key and path (subdir name). |
+| **toc** | List table of contents. path: book folder or null for current document. depth: max depth (default 2). |
+| **search** | Search sections in the book by title. path: optional; query: required. |
+| **read** | Read section content by section title (fuzzy match). path: optional; query: required. |
+| **web_search** | Web search via Serper. query: required; num: max results (default 10). Requires SERPER_API_KEY. |
+| **web_fetch** | Fetch URL content (default: Jina). To save: pass a subdir name (e.g. downloadPath or saveToSubdir = 'fetched'). Tool creates that subdir under workspace output, derives filename from URL/title (e.g. coursera-rlhf.md), writes content there. Path is only under workspace output. url: required; backend, download_path, downloadPath, saveToSubdir optional. |
+| **figure_resolve** | Resolve figure reference to file path. path: optional (book folder); figure_ref: required. |
+| **figure_show** | Figure path + prompt + optional base64 for agent. path: optional; figure_ref: required; no_image: optional. |
+| **index** | Build index.json in the book folder. path: optional (current document if null). |
+
+Usage flow: call **get_config** first. If no current document → ask user → `add_document(id, path)`; if needed `create_workspace(id)`, `add_document_to_workspace(id, id)`, `set_current_workspace(id)`, `set_workspace_current_document(id, id)`. Or `add_book(id, path)` and `set_current_book(id)`. For toc/search/read/figure, omit path to use current document. Write outputs **only** under **`AGENT_WRITE_ROOT`** / **`_resolved_output_dir`** (see **Output root (hard requirement)**).
 
 ## Workflow (e.g. "start over" or "work on a chapter")
 
-1. Call `get_config()`.
-2. If no current workspace or no current document: ask user for document path and id. Then `add_document(id, path)`; create workspace if needed (`create_workspace(id)`), `add_document_to_workspace(id, id)`, `set_current_workspace(id)`, `set_workspace_current_document(id, id)`. Or use `add_book(id, path)` and `set_current_book(id)`.
+1. Call **get_config**.
+2. If no current workspace or no current document: ask user for document path and id. Then `add_document(doc_id, path)`; create workspace if needed (`create_workspace(workspace_id)`), `add_document_to_workspace(workspace_id, doc_id)`, `set_current_workspace(workspace_id)`, `set_workspace_current_document(workspace_id, doc_id)`. Or use `add_book(book_id, path)` and `set_current_book(book_id)`.
 3. If you need to write and `_resolved_output_dir` is null: set up current workspace (step 2); optionally `set_workspace_output_subdir(workspace_id, "notebooks", "notebooks")`.
-4. Use **run_toc, run_search, run_read** (and run_index when needed) for book content; write only under `_resolved_output_dir`.
+4. Use **toc, search, read** (and index when needed) for book content; write only under **`AGENT_WRITE_ROOT`**.
 
-## CLI
+## CLI (reference)
+
+If the user has the book-agent CLI installed (e.g. in another environment), the same operations can be done from the terminal:
 
 ```bash
 book-agent config show

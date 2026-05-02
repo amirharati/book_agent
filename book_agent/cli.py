@@ -8,11 +8,13 @@ CLI entry point: run conversion (and future commands) from the shell.
     book-agent read "Section Title" path/to/book_folder
 """
 
+import json
 from pathlib import Path
 
 import typer
 
 from book_agent.agent_tools import config_app, figure_app, get_book_path, run_index, run_read, run_search, run_toc, run_web_fetch, run_web_search
+from book_agent import cursor_setup
 from book_agent.api import convert_pdf_to_markdown
 from book_agent.backends import REGISTRY
 
@@ -222,14 +224,76 @@ def web_fetch_cmd(
 
 @app.command("sync-rule")
 def sync_rule_cmd() -> None:
-    """Update .cursor/rules/book-agent.mdc from tool registry (keeps rule and MCP in sync)."""
+    """Update .cursor/rules/book-agent.mdc from tool registry (MCP tool list + table)."""
     from book_agent.sync_rule import sync_rule
 
     if sync_rule():
-        typer.echo("Updated .cursor/rules/book-agent.mdc (import block and prose tool list from registry).")
+        typer.echo("Updated .cursor/rules/book-agent.mdc (MCP names and table from registry).")
     else:
         typer.echo("Rule already in sync with registry.")
 
+
+cursor_app = typer.Typer(help="Install book-agent MCP into Cursor for any workspace folder.")
+
+
+def _ensure_mcp_extra() -> None:
+    try:
+        import mcp  # noqa: F401
+    except ImportError:
+        typer.echo(
+            "Error: MCP support is not installed. Run: pip install 'book-agent[mcp]' "
+            "(or uv add --extra mcp).",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+
+@cursor_app.command("print-mcp-json")
+def cursor_print_mcp_json(
+    python: str | None = typer.Option(
+        None,
+        "--python",
+        "-p",
+        help="Python executable for MCP command (default: interpreter running this CLI)",
+    ),
+) -> None:
+    """Print JSON to merge into ~/.cursor/mcp.json (only the book-agent server block)."""
+    _ensure_mcp_extra()
+    typer.echo(cursor_setup.print_mcp_fragment(python_executable=python))
+
+
+@cursor_app.command("install-mcp")
+def cursor_install_mcp(
+    python: str | None = typer.Option(
+        None,
+        "--python",
+        "-p",
+        help="Python executable for MCP command (default: interpreter running this CLI)",
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print merged file contents; do not write."),
+) -> None:
+    """
+    Merge book-agent into ~/.cursor/mcp.json so tools load in every folder you open.
+    Restart Cursor after running. Requires book-agent[mcp] on the chosen Python.
+    """
+    _ensure_mcp_extra()
+    try:
+        path, data = cursor_setup.merge_book_agent_mcp(
+            python_executable=python,
+            dry_run=dry_run,
+        )
+    except ValueError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1)
+    if dry_run:
+        typer.echo(json.dumps(data, indent=2))
+        typer.echo("(dry-run: not written)", err=True)
+        return
+    typer.echo(f"Wrote book-agent MCP entry to {path}")
+    typer.echo("Restart Cursor fully so it reloads MCP servers.", err=True)
+
+
+app.add_typer(cursor_app, name="cursor")
 
 app.add_typer(config_app, name="config")
 app.add_typer(figure_app, name="figure")

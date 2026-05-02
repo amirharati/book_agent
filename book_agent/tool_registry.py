@@ -6,8 +6,7 @@ Policy ("when to use") lives in .cursor/rules; behavior lives in agent_tools and
 
 from typing import Any
 
-# Config/setup names for the rule's Python import block (not in TOOLS: path helpers only).
-# TOOLS includes get_config + all run_* + all config/workspace mutators; this list is the rest for the rule import.
+# Optional: extra Python symbols documented for callers (not used by sync-rule; rule is MCP-only).
 RULE_CONFIG_IMPORTS: list[str] = [
     "get_document_path_for_agent",
     "get_book_path",

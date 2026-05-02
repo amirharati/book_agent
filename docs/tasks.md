@@ -10,7 +10,7 @@ Clean list of tools (and why), config, and ordered steps **before** we add an MC
 
 - **Core tools:** `index`, `toc`, `search`, `read`, **figure** (resolve + show for agent image injection), **web search** (Serper), **web fetch** (Jina). All in `book_agent.agent_tools` and CLI (`book-agent`). Both web search and web fetch are implemented and tested (Serper API key + Jina optional key for higher limits).
 - **Config & workspace:** Main config `.book_agent.json` (documents, output_root, current_workspace); per-workspace `.book_workspace.json` under `outputs/<workspace_id>/`. Path resolution defaults to current workspace's current document; index **auto-created** when missing.
-- **Agent integration:** `.cursor/rules/book-agent.mdc` — get config first, ask when workspace/document missing, use run_toc/run_search/run_read/resolve_figure; write only to `_resolved_output_dir`. Markdown/math rules for generated content ($...$ / $$...$$).
+- **Agent integration:** `.cursor/rules/book-agent.mdc` — MCP tool policy: get_config first, ask when workspace/document missing, use toc/search/read/figure_show; write only to `_resolved_output_dir`. Markdown/math rules for generated content ($...$ / $$...$$).
 - **Indexing:** `markdown_index` builds `index.json` from .md + optional meta; supports TOC table scoping, full-doc heading fallback, nesting from heading level. Tested on Bishop, Mackay, Sutton, papers (e.g. f95377a6, f4417c66).
 
 **Current usage (from repo):**
@@ -99,7 +99,7 @@ The codebase is set up so **adding a new tool is straightforward**:
 2. **Module:** Create \`book_agent/tools/<name>.py\`. Implement \`run(path: Optional[Path] = None, ...)\` using \`get_document_path_for_agent(None)\` when \`path is None\`, then \`resolve_book_path(path)\` if the tool needs the book folder. Return data or raise \`ValueError\`. Optionally add \`xxx_app = typer.Typer(...)\` for CLI subcommands.
 3. **Agent API:** In \`book_agent/agent_tools.py\`, import and add to \`__all__\`.
 4. **CLI:** In \`book_agent/cli.py\`, add \`@app.command(\"name\")\` (and \`_run_tool(run_<name>, ...)\`) or \`app.add_typer(xxx_app, name=\"xxx\")\`.
-5. **Rules:** If needed, add one line in \`.cursor/rules/book-agent.mdc\` for when the agent should call the new tool.
+5. **Rules:** Add the tool to \`tool_registry.TOOLS\`, wire MCP, then run \`book-agent sync-rule\` to refresh \`.cursor/rules/book-agent.mdc\` (or extend the rule prose manually for policy-only notes).
 
 ---
 

@@ -55,7 +55,7 @@ When the **calling environment** (e.g. Cursor) already provides web search, fetc
 - **Prefer the caller’s tools when available.** In Cursor, use Cursor’s search and fetch; don’t add book-agent web search/fetch just to use them inside Cursor. Saves money and keeps one source of truth.
 - **Add our own for environments that don’t have them.** CLI users, MCP-only agents, or other IDEs may have no built-in search/fetch. There we implement `run_web_search` / `run_web_fetch` so the workflow is complete.
 
-Same idea for other “environment might already have it” tools: if the caller has it, use theirs; if not, we provide it. The rule (e.g. in book-agent.mdc) can say: “Use Cursor’s search/fetch when in Cursor; when using CLI or an environment without search/fetch, use book-agent run_web_search / run_web_fetch if available.”
+Same idea for other “environment might already have it” tools: if the caller has it, use theirs; if not, we provide it. The rule in `.cursor/rules/book-agent.mdc` tells the model to prefer the host’s search/fetch in Cursor when useful, and fall back to MCP `web_search` / `web_fetch` when not.
 
 ---
 

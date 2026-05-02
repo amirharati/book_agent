@@ -100,7 +100,7 @@ Optional later: `outputs.notebooks` could be `../my-study-repo/notebooks` so not
 
 ## 6. Agent rules (Cursor rules)
 
-Update `.cursor/rules/book-agent.mdc` (or equivalent) so that:
+Update `.cursor/rules/book-agent.mdc` so that:
 
 1. **Before using book tools:** The agent should get current context via `get_config()`. It can then answer “what is the current book?” from that.
 2. **When using toc/search/read/figure:** If the user doesn’t specify a book/path, use the **current book** from config (i.e. call the tools without path, or with the path returned by get_config). If the user specifies a book or path, use that (override).
@@ -128,7 +128,7 @@ All config commands read/write the same config file (see §3). Optional: `book-a
 3. **CLI** — Add `config` Typer subapp with commands: show, set-current, add-book, set-output. Wire to config module.
 4. **agent_tools** — Export `get_config`, `set_current_book`, `add_book`, `set_output`, `get_book_path` (and optionally `resolve_book` as alias). So the agent can get/set config and other tools can get default path.
 5. **Existing tools (toc, search, read, figure)** — Add optional path argument; when path is None/omitted, call `get_book_path(None)` and use that; if None, return clear error. CLI commands: when path is omitted, same logic.
-6. **Rules** — Update `.cursor/rules/book-agent.mdc` with §6 (get config first, stick to current book and output paths).
+6. **Rules** — Update `.cursor/rules/book-agent.mdc` (MCP policy) with §6 (get config first, stick to current book and output paths).
 7. **Docs** — Update README and BOOK_AGENT_TOOLS.md: config file format, config commands, “current book” and “outputs” behaviour.
 
 ---

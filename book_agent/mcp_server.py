@@ -261,8 +261,8 @@ def _mcp_app():
             "add_document_to_workspace(doc_id, doc_id), set_current_workspace(doc_id), set_workspace_current_document(doc_id, doc_id). "
             "Or use add_book(book_id, path) then set_current_book(book_id) to do both in one go.\n"
             "• 'Create workspace' / 'make a workspace': use create_workspace(workspace_id).\n"
-            "• If there is no .book_agent.json yet, the user must set output_root (or run from a folder that has one); "
-            "get_config shows current state. Create workspace and add documents as above so tools (toc, search, read) have a current document."
+            "• If there is no .book_agent.json yet, the first config-changing MCP call creates it under the workspace when BOOK_AGENT_CONFIG points there; "
+            "get_config shows current state. Create workspace and add documents so tools (toc, search, read) have a current document."
         )
 
     return mcp

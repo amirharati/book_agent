@@ -63,22 +63,45 @@ Dependencies are in `pyproject.toml` (core + optional `env`, `mcp`, `dev`).
 
 To **chat with your book** from Cursor (or another MCP client), add the book-agent MCP server. It exposes all tools (create workspace, add document, toc, search, read, web_fetch, web_search, figure, index) so the agent can work with your workspace and documents without you running Python yourself.
 
-### Install for MCP
+### Install once, open any folder (recommended)
 
-1. **Create the repo venv** (if using uv):
+1. Install book-agent **with MCP** on one interpreter:
+
    ```bash
-   cd /path/to/book_agent
-   uv sync --extra mcp --extra env
+   pip install "book-agent[mcp]"
    ```
 
-2. **Configure your client** (e.g. Cursor). Create or edit `.cursor/mcp.json`:
+   Or clone this repo and run `uv sync --extra mcp --extra env`.
 
-**Use from this repo (book_agent as workspace):**
+2. Merge Cursor’s **global** MCP config (safe to re-run; keeps other servers):
+
+   ```bash
+   book-agent cursor install-mcp
+   ```
+
+3. **Restart Cursor** fully.
+
+4. Link the Cursor rule globally so every workspace sees the same policy (`get_config` first, MCP tool names). Prefer a **symlink** to the repo file (stays in sync after `book-agent sync-rule`):
+
+   ```bash
+   cd /path/to/book_agent   # your clone
+   mkdir -p ~/.cursor/rules
+   ln -sf "$PWD/.cursor/rules/book-agent.mdc" ~/.cursor/rules/book-agent.mdc
+   ```
+
+   See **[docs/USAGE.md](docs/USAGE.md)** for details, output policy, optional global skill, and alternatives (copy or project-only rule).
+
+Optional: `book-agent cursor print-mcp-json` prints the JSON fragment; `book-agent cursor install-mcp --python /path/to/python` pins the interpreter. The **`book-agent-mcp`** command is also installed (same as `python -m book_agent.mcp_server`).
+
+### Project-only or custom paths
+
+If you prefer **`.cursor/mcp.json` only inside this repo**, or a hand-edited global file, use **`cwd`: `${workspaceFolder}`** and **`BOOK_AGENT_CONFIG`: `${workspaceFolder}/.book_agent.json`** so each opened folder gets its own config and `outputs/`. Example `command`: path to a venv Python that has `book-agent[mcp]` installed.
+
 ```json
 {
   "mcpServers": {
     "book-agent": {
-      "command": "${workspaceFolder}/.venv/bin/python",
+      "command": "/absolute/path/to/python-with-book-agent",
       "args": ["-m", "book_agent.mcp_server"],
       "cwd": "${workspaceFolder}",
       "env": { "BOOK_AGENT_CONFIG": "${workspaceFolder}/.book_agent.json" }
@@ -86,27 +109,10 @@ To **chat with your book** from Cursor (or another MCP client), add the book-age
   }
 }
 ```
-Requires `uv sync --extra mcp --extra env` to have been run in this repo so `.venv` exists.
 
-**Use from any other project (one Python for all workspaces):**  
-Point `command` at the book_agent repo’s venv and keep `cwd` as the current project so config and outputs are per-project:
-```json
-{
-  "mcpServers": {
-    "book-agent": {
-      "command": "/absolute/path/to/book_agent/.venv/bin/python",
-      "args": ["-m", "book_agent.mcp_server"],
-      "cwd": "${workspaceFolder}",
-      "env": { "BOOK_AGENT_CONFIG": "${workspaceFolder}/.book_agent.json" }
-    }
-  }
-}
-```
-Replace `/absolute/path/to/book_agent` with the real path to this repo. No need for a venv in each project.
+Full options and testing: [docs/design/MCP_SERVER.md](docs/design/MCP_SERVER.md).
 
-3. **Optional — companion rule:** Copy `.cursor/rules/book-agent-mcp.mdc` into your project’s `.cursor/rules/` so the agent knows when to use which tools (e.g. “add a book” → add_document, “create workspace” → create_workspace). See [docs/design/MCP_SERVER.md](docs/design/MCP_SERVER.md).
-
-4. **Restart Cursor** (or your MCP client) after changing `mcp.json`.
+**Companion rule:** `.cursor/rules/book-agent.mdc` — symlink into **`~/.cursor/rules/`** (recommended) or copy; per-project only is fine too.
 
 **Tools exposed:** get_config, create_workspace, add_document, set_current_workspace, add_document_to_workspace, set_workspace_current_document, set_workspace_output_subdir, remove_document_from_workspace, add_book, set_current_book, set_output, toc, search, read, web_search, web_fetch, figure_resolve, figure_show, index. There is also a **book_agent_context** prompt that explains setup and “add a book” / “create workspace” to the model.
 

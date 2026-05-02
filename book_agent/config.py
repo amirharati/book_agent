@@ -19,33 +19,15 @@ TOOLS_CONFIG_FILENAME = "book_agent_tools.py"  # Python file: how tools run (LLM
 DEFAULT_OUTPUT_ROOT = "outputs"
 
 
-def _find_repo_root() -> Path | None:
-    """Walk up from package dir to find a directory containing pyproject.toml or .book_agent.json."""
-    try:
-        start = Path(__file__).resolve().parent
-    except NameError:
-        return None
-    for parent in [start, *start.parents]:
-        if (parent / "pyproject.toml").exists() or (parent / CONFIG_FILENAME).exists():
-            return parent
-    return None
-
-
 def get_config_path() -> Path:
-    """Path to the config file. Env BOOK_AGENT_CONFIG wins; else cwd; else repo root; else cwd for create."""
+    """Path to the config file. BOOK_AGENT_CONFIG wins; else nearest .book_agent.json from cwd upward; else cwd/.book_agent.json for create."""
     env_path = os.environ.get("BOOK_AGENT_CONFIG")
     if env_path:
         return Path(env_path).resolve()
-    cwd_file = (Path.cwd() / CONFIG_FILENAME).resolve()
-    if cwd_file.exists():
-        return cwd_file
-    repo = _find_repo_root()
-    if repo is not None:
-        repo_file = repo / CONFIG_FILENAME
-        if repo_file.exists():
-            return repo_file
-        return repo_file
-    return cwd_file
+    found = _find_config_file()
+    if found is not None:
+        return found
+    return (Path.cwd() / CONFIG_FILENAME).resolve()
 
 
 # Default LLM model for TOC inference etc. (OpenRouter model id)
@@ -128,17 +110,14 @@ def _config_base_path() -> Path:
 
 
 def _find_config_file() -> Path | None:
-    """Return path to existing .book_agent.json, or None."""
+    """Return path to existing .book_agent.json, or None. Walks cwd and parents when BOOK_AGENT_CONFIG is unset."""
     env_path = os.environ.get("BOOK_AGENT_CONFIG")
     if env_path:
         p = Path(env_path).resolve()
         if p.exists():
             return p
-    repo = _find_repo_root()
-    if repo is not None:
-        rp = (repo / CONFIG_FILENAME).resolve()
-        if rp.exists():
-            return rp
+        # Explicit path from MCP/Cursor but file not created yet — do not walk cwd (would load another project's config).
+        return None
     for d in [Path.cwd(), *Path.cwd().parents]:
         cf = (d / CONFIG_FILENAME).resolve()
         if cf.exists():

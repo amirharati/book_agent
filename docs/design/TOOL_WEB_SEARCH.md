@@ -37,7 +37,7 @@
 1. Add `book_agent/tools/web_search.py`: `run_web_search(query, num=10)` using Serper API (POST `https://google.serper.dev/search`, header `X-API-KEY`, body `{"q": query, "num": num}`). Parse `organic` array → list of `{title, link, snippet}`.
 2. Wire in `agent_tools.py` and `cli.py` (new command `web-search`).
 3. Document `SERPER_API_KEY` in README or LLM_BACKEND.md (env vars section).
-4. Rule: one line in book-agent.mdc — "When you need to look something up outside the book and the environment has no search, use `run_web_search` (requires SERPER_API_KEY)."
+4. Rule (`.cursor/rules/book-agent.mdc`): prefer host search when available; otherwise use MCP tool `web_search` (requires SERPER_API_KEY).
 
 ---
 

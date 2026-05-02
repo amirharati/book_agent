@@ -28,6 +28,7 @@ mcp = ["mcp>=1.0.0"]
 
 [project.scripts]
 book-agent = "book_agent.cli:main"
+book-agent-mcp = "book_agent.mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

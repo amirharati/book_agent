@@ -49,17 +49,14 @@ All optional `path` arguments: when omitted, use current document from config (s
 
 ### 2.1 Shared system for rules and MCP (avoid duplication)
 
-Rules (`.cursor/rules/book-agent.mdc`) and the MCP server both describe and use the **same tools**. To keep them in sync without maintaining two separate lists:
+The **Cursor rule** (`.cursor/rules/book-agent.mdc`) and the **MCP server** both describe the **same MCP tools**. Implementation stays one place (`book_agent.agent_tools`); the server is a thin wrapper.
 
-- **Behavior:** Already shared. Both the rule (agent runs Python) and the MCP server call the same code in `book_agent.agent_tools` — so implementation is a single source of truth.
-- **Tool list (name + description):** Keep a **single canonical registry** in code (e.g. `book_agent/tool_registry.py`) that lists each tool’s MCP name, short description, and argument names. The MCP server reads this registry to register tools with consistent names and descriptions. The rule can say “tools are: get_config, toc, search, read, run_web_search, run_web_fetch, resolve_figure, … (see BOOK_AGENT_TOOLS)” and we update the rule’s list only when we add a tool; the canonical definitions live in the registry so MCP and docs don’t drift.
-- **Policy (“when to use”):** Lives only in the rule — e.g. “get config first”, “fetch default Jina”, “fall back if over limit”. The MCP server does not encode policy; it just exposes tools. So we don’t duplicate policy.
+- **Tool list (name + description):** Canonical registry in **`book_agent/tool_registry.py`** (`TOOLS`: `name`, `description`, `args`, `python_name`). The MCP server imports `TOOLS` to register tools. [BOOK_AGENT_TOOLS.md](../BOOK_AGENT_TOOLS.md) points here as the canonical list.
+- **Policy (“when to use”):** Lives in **`.cursor/rules/book-agent.mdc`** (e.g. get config first, web fetch defaults). The MCP server does not encode policy; it exposes tools only.
 
-**Concrete approach:** The **only file** you add to is **`book_agent/tool_registry.py`**: add one dict to **`TOOLS`** (with `name`, `description`, `args`, `python_name`) for each new tool, or one name to **`RULE_CONFIG_IMPORTS`** for a new config/setup symbol in the rule. Then run **`book-agent sync-rule`**. The MCP server (when built) will import `TOOLS` and register each entry. The usage doc [BOOK_AGENT_TOOLS.md](../BOOK_AGENT_TOOLS.md) points to this registry as the canonical list. The rule’s full import list and prose tool list are generated from the registry only.
+**Concrete approach:** Add or edit one dict in **`TOOLS`** in `tool_registry.py`, wire the handler in `mcp_server.py` / `agent_tools.py` as today. Run **`book-agent sync-rule`** to refresh the rule’s inline MCP tool list and the **Tools (MCP)** table from `TOOLS`.
 
-**Sync util:** Run **`book-agent sync-rule`** (or `python scripts/sync_rule_from_registry.py`) after changing the registry. It rewrites the rule’s “Tools (Python)” import list and the inline “Prefer book-agent tools (…)” list from `TOOLS`, so the rule and MCP share one source of truth.
-
-**Prompts / “when to use”:** Right now policy lives only in the rule (manually). When we implement the MCP server, we will take care of sharing prompts so rule and MCP use the same “when to use” text (e.g. from the registry or a single doc that both consume).
+**Sync util:** Run **`book-agent sync-rule`** (or `python scripts/sync_rule_from_registry.py`) after registry changes. It rewrites the “Prefer book-agent MCP tools (…)” line and the markdown table in the rule from `TOOLS`.
 
 ---
 
@@ -159,10 +156,30 @@ To avoid a separate venv per project, use a **single** Python that has book-agen
 
 Replace `/absolute/path/to/book_agent` with the real path to this repo. Run `uv sync --extra mcp --extra env` once in the book_agent repo to create that `.venv`. Every workspace then uses the same Python; only `cwd` (and thus `.book_agent.json` and outputs) changes per project.
 
-**Companion rule (recommended)**  
-So the agent knows *when* to use book-agent tools and what “add a book” / “create workspace” mean, copy a **rule file** into the project’s `.cursor/rules/` alongside `mcp.json`. From this repo, copy:
+**E) CLI installer (install once, use in any folder you open)**  
+Install book-agent with MCP support on **one** Python environment, then merge Cursor’s **global** config:
 
-- **`.cursor/rules/book-agent-mcp.mdc`** — MCP-only policy: call `get_config` first, use MCP tool names (get_config, create_workspace, add_document, toc, search, read, …), and proactive prompts when config is empty. No Python imports.
+```bash
+pip install "book-agent[mcp]"    # or: uv sync --extra mcp from this repo
+book-agent cursor install-mcp  # writes ~/.cursor/mcp.json (merges; keeps other servers)
+```
+
+This registers `book-agent` with `cwd` `${workspaceFolder}`, `BOOK_AGENT_CONFIG` `${workspaceFolder}/.book_agent.json`, and `command` set to the interpreter that ran the CLI (override with `--python /path/to/python`). **Restart Cursor** afterward so MCP reloads.
+
+- Inspect without writing: `book-agent cursor print-mcp-json`
+- Dry-run merge: `book-agent cursor install-mcp --dry-run`
+
+The package also installs a **`book-agent-mcp`** console script (same as `python -m book_agent.mcp_server`) if you prefer an executable on `PATH` instead of `-m`.
+
+**Companion rule (recommended)**  
+So the agent knows *when* to use book-agent tools and what “add a book” / “create workspace” mean, install the rule **globally** with a **symlink** (recommended — one canonical file; `book-agent sync-rule` updates the repo copy):
+
+```bash
+mkdir -p ~/.cursor/rules
+cd /path/to/book_agent && ln -sf "$PWD/.cursor/rules/book-agent.mdc" ~/.cursor/rules/book-agent.mdc
+```
+
+Or copy that file into **`~/.cursor/rules/`**, or keep it only in a project’s **`.cursor/rules/`**. It describes MCP tool names and policy (get config first, proactive prompts when config is empty).
 
 Then the agent has both the tools (from the MCP server) and the policy (from the rule). If book-agent tools don’t appear in a chat, the rule suggests the user check MCP connection or use the **book_agent_context** prompt.
 
@@ -176,7 +193,7 @@ Then the agent has both the tools (from the MCP server) and the policy (from the
 2. **Configure** `.cursor/mcp.json` (or global) with the `book-agent` server and **restart Cursor**.
 3. **Verify in chat:** In a Cursor chat, confirm that MCP tools from “book-agent” appear (e.g. “book-agent: toc”, “book-agent: read”). Ask the agent to “show me the table of contents of the current book” or “search the book for regression” and check that it uses the MCP tools and returns sensible results.
 4. **Check config:** Ask “what is the current book-agent config?” and confirm it matches `get_config()` (current workspace, document, output dir).
-5. **Optional:** Turn off or rename the rule that injects Python `book_agent.agent_tools` so the agent is forced to use MCP for book-agent; then re-run the same prompts to ensure behavior is the same.
+5. **Optional:** In a project that also has other rules, ensure nothing tells the model to call Python `run_*` names for book-agent; this repo’s rule expects MCP tool names when the MCP server is enabled.
 
 ---
 
@@ -211,7 +228,7 @@ Then the agent has both the tools (from the MCP server) and the policy (from the
 | 1 | Install: `uv sync --extra mcp --extra env` (or `pip install -e ".[env,mcp]"`) in the book_agent repo. |
 | 2 | MCP server exposes 19 tools (config/workspace + toc, search, read, web_search, web_fetch, figure_*, index) and one prompt (book_agent_context). |
 | 3 | Configure client: `.cursor/mcp.json`. One Python for all workspaces: `command` = path to `book_agent/.venv/bin/python`, `cwd` = `${workspaceFolder}`, `env.BOOK_AGENT_CONFIG` = `${workspaceFolder}/.book_agent.json`. See §4 D. |
-| 4 | Optional: copy `.cursor/rules/book-agent-mcp.mdc` into the project `.cursor/rules/`. Restart Cursor after config changes. |
+| 4 | Optional: symlink `~/.cursor/rules/book-agent.mdc` → repo `.cursor/rules/book-agent.mdc` (or copy). Restart Cursor after config changes. |
 | 5 | web_fetch with saveToSubdir: saves to `output_dir/<subdir>/<doc-slug>/<filename>.md`. See [TOOL_WEB_FETCH.md](TOOL_WEB_FETCH.md). |
 
 README and [BOOK_AGENT_TOOLS.md](../BOOK_AGENT_TOOLS.md) point here for full MCP setup and usage.

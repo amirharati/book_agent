@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Update .cursor/rules/book-agent.mdc from book_agent.tool_registry.TOOLS so the rule
-and MCP share one source of truth. Run after adding or renaming a tool in the registry.
+Update .cursor/rules/book-agent.mdc from book_agent.tool_registry.TOOLS (MCP policy rule).
+Run after adding or renaming a tool in the registry.
 
 Usage:
   python scripts/sync_rule_from_registry.py
@@ -20,7 +20,7 @@ def main() -> None:
     from book_agent.sync_rule import sync_rule
 
     if sync_rule(rule_path=RULE_PATH):
-        print(f"Updated {RULE_PATH} (import block and prose tool list from registry).")
+        print(f"Updated {RULE_PATH} (MCP tool list and table from registry).")
     else:
         print("Rule already in sync with registry.")
 

@@ -16,7 +16,7 @@ As of **Feb 2026**, the agent utilizes a **"Search-Read-Answer"** loop to intera
 *   **Contextual Answering:** Can synthesize answers to user questions based *strictly* on the retrieved text, minimizing hallucinations.
 
 ### 3. Tooling
-The agent uses the book-agent tools (CLI or Python `book_agent.agent_tools`) when answering about the book or using book content in notebooks. Cursor is instructed via `.cursor/rules/book-agent.mdc`.
+The agent uses book-agent tools: in Cursor, typically via the **MCP server** (tool names `toc`, `read`, …). The CLI and Python `book_agent.agent_tools` API are the same implementation. Cursor is instructed via `.cursor/rules/book-agent.mdc` (MCP-oriented policy).
 *   `book-agent toc` / `run_toc` — list table of contents
 *   `book-agent search` / `run_search` — find sections by title
 *   `book-agent read` / `run_read` — get section markdown
