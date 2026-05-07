@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Book Agent Web Chat</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
+  </head>
+  <body>
+    <main class="workspace" id="workspace">
+      <section class="pane left-pane">
+        <header class="header">
+          <h1>Book Workspace</h1>
+          <div class="controls-row mode-switch-row">
+            <button id="markdownViewButton" type="button">Markdown view</button>
+            <button id="pdfViewButton" type="button">PDF view</button>
+            <span class="subtle" id="fileStatus">Loading file list...</span>
+          </div>
+        </header>
+
+        <section class="panel viewer" id="viewerPanel" aria-live="polite">
+          <div id="viewerPlaceholder" class="subtle">
+            Pick a file from the config dashboard to start reading.
+          </div>
+          <article id="markdownViewer" class="markdown-viewer hidden"></article>
+          <iframe id="pdfViewer" class="pdf-viewer hidden" title="PDF viewer"></iframe>
+        </section>
+      </section>
+
+      <div class="divider" id="divider" aria-label="Resize panes" role="separator"></div>
+
+      <section class="pane right-pane">
+        <header class="header">
+          <h1>Chat</h1>
+          <p class="subtle" id="sessionStatus">Initializing session...</p>
+        </header>
+
+        <section class="panel chat-panel" id="chatPanel" aria-live="polite"></section>
+
+        <form id="composer" class="composer">
+          <textarea
+            id="messageInput"
+            name="message"
+            rows="4"
+            placeholder="Ask about the currently loaded book content..."
+            required
+          ></textarea>
+          <div class="actions">
+            <button id="sendButton" type="submit">Send</button>
+          </div>
+        </form>
+      </section>
+    </main>
+
+    <section class="config-dashboard" id="configDashboard">
+      <button class="config-toggle" id="configToggleButton" type="button">Setup</button>
+      <div class="config-panel hidden" id="configPanel">
+        <div class="controls-row">
+          <button id="closeConfigButton" type="button">Close</button>
+        </div>
+
+        <label class="subtle">
+          Markdown file
+          <div class="path-row">
+            <input id="fileInput" type="text" placeholder="Click 'Pick file' to choose an .md file" readonly />
+            <button id="pickFileButton" type="button">Pick file</button>
+          </div>
+        </label>
+
+        <label class="subtle">
+          Output folder
+          <div class="path-row">
+            <input id="outputFolderInput" type="text" placeholder="Auto-set after picking MD file" readonly />
+            <button id="pickOutputButton" type="button" disabled>Pick folder</button>
+          </div>
+        </label>
+
+        <span class="subtle">Use the picker above to load a markdown file.</span>
+      </div>
+    </section>
+
+    <div class="modal-backdrop hidden" id="folderModal" role="dialog" aria-modal="true">
+      <section class="folder-modal">
+        <header class="folder-modal-header">
+          <h2 id="folderModalTitle">Select</h2>
+          <button id="closeFolderModalButton" type="button">×</button>
+        </header>
+
+        <p class="subtle" id="folderModalCurrentPath"></p>
+
+        <div class="controls-row">
+          <button id="folderModalUpButton" type="button">↑ Up</button>
+          <button id="folderModalNewButton" type="button">+ New folder</button>
+          <button id="folderModalSelectButton" type="button">Use this folder</button>
+        </div>
+
+        <section class="folder-list panel" id="folderList"></section>
+      </section>
+    </div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
