@@ -53,7 +53,7 @@
 
 ## 6. Agent workflow
 
-The figure tool is one of four (toc, search, read, figure). Using them **together** in a workflow (e.g. answer a question using text + figures, or add a figure to a notebook to illustrate a point) is **orchestration**: e.g. `.cursor/rules` telling the agent when to call which tool, or a future workflow API/MCP. See `docs/tasks.md` §2.1.
+The figure tool is one of four (toc, search, read, figure). Using them **together** in a workflow (e.g. answer a question using text + figures, or add a figure to a notebook to illustrate a point) is **orchestration**: e.g. `.cursor/rules` telling the agent when to call which tool, or a future workflow API/MCP. See workspace rules (`book-agent.mdc`) and **[BOOK_AGENT_TOOLS.md](../BOOK_AGENT_TOOLS.md)** for tool composition.
 
 ---
 

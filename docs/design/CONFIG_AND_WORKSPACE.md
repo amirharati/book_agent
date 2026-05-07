@@ -182,4 +182,4 @@ The codebase now uses a **workspace-based** model (superseding the original sing
 ---
 
 **Status:** Implemented (workspace-based model). Original design (§1–9) described the earlier single-file schema; §10 reflects what is in code.  
-**References:** `docs/tasks.md` §1.2, §2 (Phase B), §2.1 (orchestration).
+**References:** [USAGE.md](../USAGE.md), [BOOK_AGENT_TOOLS.md](../BOOK_AGENT_TOOLS.md), [.cursor/rules/book-agent.mdc](../../.cursor/rules/book-agent.mdc) (tool orchestration policy).

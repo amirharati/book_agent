@@ -167,4 +167,4 @@ So you can open `ch05.md` for chapter 5 and use `index.json` to map “ch05” �
 | Page mapping | `<!-- page N -->` in Markdown; `index.json` with `start_page` / `end_page` per chapter. |
 | Chapter files | Detected from `## Chapter …` / `## N. …` / `## N …` at page start; one `chNN.md` per range. |
 
-For more on the overall conversion pipeline, see [PHASE1_MARKDOWN_CONVERSION.md](PHASE1_MARKDOWN_CONVERSION.md).
+For ingestion from PDF with external tooling, see **[USAGE.md](USAGE.md)**. Older phase-one requirements live in **[archive/PHASE1_MARKDOWN_CONVERSION.md](archive/PHASE1_MARKDOWN_CONVERSION.md)**.

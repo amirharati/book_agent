@@ -1,5 +1,7 @@
 # Using book-agent
 
+Documentation index: **[overview.md](overview.md)**.
+
 Config and outputs live next to **`.book_agent.json`**. With global MCP, that file is **`${workspaceFolder}/.book_agent.json`** for whichever folder you open in Cursor: install once, then use any book project.
 
 ---

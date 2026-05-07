@@ -26,7 +26,7 @@ The system should work with your existing PDFs and integrate with Cursor (and la
 
 | Phase | Focus | Outcome |
 |-------|--------|---------|
-| **Phase 1** | PDF → Markdown conversion | Simple, powerful pipeline: equations, figures, page/chapter mapping. See [Phase 1 doc](docs/PHASE1_MARKDOWN_CONVERSION.md). |
+| **Phase 1** | PDF → Markdown conversion | Equations, figures, page/chapter mapping. Operational guide: [docs/USAGE.md](docs/USAGE.md); archived requirements: [docs/archive/PHASE1_MARKDOWN_CONVERSION.md](docs/archive/PHASE1_MARKDOWN_CONVERSION.md). |
 | **Phase 2** | Structure & index | Chapter/section manifest, navigation, optional line-range or page anchors in Markdown. |
 | **Phase 3** | Cursor workflow | Chapter-by-chapter workflow, prompts, and conventions for read → practice → code. |
 | **Phase 4** | Extensions | RAG, search, or dedicated agent scripts (optional). |
@@ -40,7 +40,8 @@ book_agent/
 ├── PROJECT.md                 # This file
 ├── README.md
 ├── docs/
-│   ├── PHASE1_MARKDOWN_CONVERSION.md
+│   ├── overview.md            # Documentation map (start here for docs/)
+│   ├── USAGE.md
 │   └── ...
 ├── tools/                     # Conversion and indexing scripts
 │   └── ...
@@ -64,4 +65,4 @@ book_agent/
 
 ## Current Focus
 
-**Phase 1** — Building a simple yet powerful Markdown conversion pipeline. Details and requirements are in `docs/PHASE1_MARKDOWN_CONVERSION.md`.
+**Phase 1** — PDF→Markdown ingestion and indexing. Current practice: **`docs/USAGE.md`**; doc index: **`docs/overview.md`**.

@@ -5,13 +5,15 @@
 | **Status** | Draft — build when time allows |
 | **Phase** | Post–“book-agent in Cursor IDE” (MCP + rules); new surface: custom browser UI |
 | **Owner** | (you) |
-| **Related** | [USAGE.md](USAGE.md), [design/MCP_SERVER.md](design/MCP_SERVER.md), [BOOK_AGENT_TOOLS.md](BOOK_AGENT_TOOLS.md), [Cursor TypeScript SDK](https://cursor.com/docs/api/sdk/typescript) |
+| **Related** | [USAGE.md](USAGE.md), [overview.md](overview.md), [design/MCP_SERVER.md](design/MCP_SERVER.md), [BOOK_AGENT_TOOLS.md](BOOK_AGENT_TOOLS.md), [Cursor TypeScript SDK](https://cursor.com/docs/api/sdk/typescript) |
 
 ---
 
 ## 1. Problem & context
 
 Today, book-agent is used **inside Cursor**: MCP server, config/workspaces, rules for output paths. That works for developers who live in the IDE.
+
+**Parallel track:** Users may adopt **other agent-centric products** (e.g. **Claude Code**, similar CLIs or hosts that expose MCP). The **book-agent MCP server** is the reusable core; investigation should confirm **stdio + env** wiring and whether **prompt/policy** equivalents exist outside Cursor (see §12.6).
 
 **Gap:** A **browser-first** product can offer a simpler, guided UX (course flows, read-along, structured “sessions”) while still using the same **book tools** and a **strong agent** (Cursor-backed or equivalent).
 
@@ -25,11 +27,8 @@ Today, book-agent is used **inside Cursor**: MCP server, config/workspaces, rule
 2. **Agent loop** implemented with **`@cursor/sdk`** (TypeScript backend): create agent, send prompts, stream responses to the UI; support **multi-turn** sessions.
 3. **User credentials** configurable in the app (e.g. **Cursor API key**, and any keys the agent needs: OpenRouter, Serper, etc. per your deployment policy)—**never** committed to repos; stored and injected server-side.
 4. **book-agent integration**: agent can use **book-agent MCP** (or HTTP-wrapped equivalent later) with **`cwd` / `BOOK_AGENT_CONFIG`** aligned to the user’s project root, same semantics as [USAGE.md](USAGE.md).
-5. **Artifact execution layer**: for files the agent creates under the **resolved output directory** (and optionally elsewhere by explicit user action), the app can:
-   - **Run** Jupyter notebooks (headless execute and/or open in Jupyter—see §6),
-   - **Run** interpretable scripts (e.g. Python) with captured stdout/stderr,
-   - **Compile / run** native code where applicable (e.g. C++ via `clang++`/`g++` in a sandboxed build dir),
-   - **Open / preview** Markdown and other viewable types in the UI or via system handler where allowed.
+5. **Artifact execution layer (optional per release):** v1 may **only** open paths, list files, and instruct the user to **run code in Cursor or a local shell**; full in-app execution is a stretch goal (see §6.4 and §12.4).
+6. **Reading surface:** main pane supports **rendered Markdown (or HTML)** and a **PDF view** for faithful layout; **persistent sidebar chat** for multi-turn study; all generated files stay under **`_resolved_output_dir`** (server-enforced where possible).
 
 ## 3. Non-goals (this phase)
 
@@ -110,6 +109,8 @@ flowchart LR
 
 ### 6.4 Artifact execution & “open”
 
+*v1 product may satisfy this subsection with **path discovery + preview + open-in-Cursor/terminal** only; headless notebook/script runs remain optional until explicitly scoped.*
+
 - **FR-12** **Discovery**: After agent run, optionally scan **`_resolved_output_dir`** (from last `get_config` snapshot or `.book_agent.json` parse) for new/changed files.
 - **FR-13** **Notebook**: Backend action **Execute notebook** — run headless pipeline (e.g. `jupyter execute`, `papermill`, or Jupyter Server API) with **timeout**, **working directory** = notebook dir or workspace root; return structured output (per-cell or aggregated log).
 - **FR-14** **Notebook (interactive) optional**: **Open in Jupyter** — launch or link to JupyterLab URL if you run a sidecar Jupyter service (phase 1.5).
@@ -170,10 +171,47 @@ flowchart LR
 2. **Cloud SDK:** Will v1 use **only local** `cwd`, or **Cursor cloud** repos from day one?
 3. **Auth:** Local-only login vs OAuth for hosted?
 4. **Notebook UX:** Headless logs enough for v1, or mandatory JupyterLab embedding?
+5. **Multi-host agents:** Which **non-Cursor** products are in scope first (Claude Code, CLI tools, IDE extensions), and is **parity** limited to MCP + pointers to policy docs or do we ship host-specific installers?
 
 ---
 
-## 12. Success criteria (phase complete)
+## 12. Reading surface, sync, formats & annotations (product direction)
+
+### 12.1 Canonical model
+
+- **Indexed sections** (same shape as today’s `index.json` / TOC: stable **section ids**, titles, ranges) are the **contract** between ingestion, chat context, and UI.
+- **Views** (Markdown render, PDF viewer, later **sanitized HTML**) are **projections** of that model—not separate sources of truth.
+
+### 12.2 PDF ↔ Markdown (or HTML) alignment
+
+- **Primary place to solve this is ingest + indexing**, not the client alone: emit **section ↔ PDF page span** (or block-level hints) when the converter provides it; post-process with **text overlap** against per-page PDF text for **selectable-text** PDFs when page metadata is missing or noisy.
+- **Scanned / image PDFs:** expect weaker coupling unless OCR + layout adds structure; UI should label sync as **approximate** when confidence is low.
+- **Client behavior:** jump/scroll by **lookup** from the index and sidecar sync metadata; optional lightweight fallback heuristics only.
+
+### 12.3 HTML without Markdown files (later)
+
+- **Out of v1**, but low coupling if the indexer ingests **HTML headings** into the same section tree; render path becomes “HTML mode” instead of “MD mode.” Same chat and artifact rules apply.
+
+### 12.4 Highlights & comments (later)
+
+- Store in **sidecar storage** (e.g. JSON or DB under the workspace output tree), **not** embedded in publisher PDF/MD unless explicitly exported.
+- **Anchor** annotations to **`index` node id** plus optional **character offset** in normalized text, and optionally **PDF page + quads** for PDF-only highlights.
+- **Re-ingest drift:** keep a **quote snippet** or fingerprint to re-pin anchors after a new PDF→MD run.
+
+### 12.5 Execution handoff
+
+- **Acceptable default:** user switches to **Cursor or terminal** to run notebooks/scripts; the app surfaces **paths**, **“open folder”**, and suggested commands.
+- **Optional later:** headless notebook/script execution as already sketched in §6.4 when security and ops warrant it.
+
+### 12.6 Other platforms & agent products
+
+- **Principle:** One **MCP server** + **`.book_agent.json`** semantics; hosts differ only in **how** the server is registered and whether **artifacts policy** can be conveyed (rules/skills/README prompts).
+- **Investigate:** **[Claude Code](https://docs.anthropic.com/en/docs/claude-code/settings)** and similar hosts (VS Code MCP extensions, Claude Desktop, other CLIs)—**stdio** transport, **`cwd`** at project root, **`BOOK_AGENT_CONFIG`**—plus host **limitations** (tool limits, paths, sandboxing).
+- **Deliverable (documentation):** short **compatibility checklist** or table in **`USAGE.md` / overview** (“Cursor: install-mcp; Other: paste this JSON snippet”) once validated—not a separate product unless justified.
+
+---
+
+## 13. Success criteria (phase complete)
 
 - User can complete **S1** end-to-end with streaming.
 - User can complete **S2** with at least **headless notebook execution** and visible results/errors.
@@ -182,8 +220,9 @@ flowchart LR
 
 ---
 
-## 13. References
+## 14. References
 
 - Cursor SDK skill / docs: `cursor-sdk` in Cursor skills; https://cursor.com/docs/api/sdk/typescript  
 - Book-agent MCP: [design/MCP_SERVER.md](design/MCP_SERVER.md)  
-- Workspace & outputs: [USAGE.md](USAGE.md), [design/CONFIG_AND_WORKSPACE.md](design/CONFIG_AND_WORKSPACE.md)
+- Workspace & outputs: [USAGE.md](USAGE.md), [design/CONFIG_AND_WORKSPACE.md](design/CONFIG_AND_WORKSPACE.md)  
+- Docs map: [overview.md](overview.md)

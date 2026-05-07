@@ -235,5 +235,6 @@ See [docs/LAYOUT_AND_CHAPTERS.md](docs/LAYOUT_AND_CHAPTERS.md) for layout extrac
 
 ## See also
 
+- **[docs/overview.md](docs/overview.md)** — Map of `docs/` (USAGE, tools, design, backlog, archive).
 - **[docs/BOOK_AGENT_TOOLS.md](docs/BOOK_AGENT_TOOLS.md)** — Full usage for CLI and AI (Python API and MCP); config, toc, search, read, web_fetch, figures.
 - **[docs/design/MCP_SERVER.md](docs/design/MCP_SERVER.md)** — MCP install, config (same repo vs other project), and troubleshooting.
