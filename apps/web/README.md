@@ -20,13 +20,14 @@ npm run dev
 
 The server listens on `http://localhost:8787`.
 
-Open this URL in your browser to use the chat UI.
+Open this URL in your browser to use the **Research Studio** UI.
 
 Current UI:
 
-- Left pane: control panel + document viewer (`.md` / `.pdf`) with view switch
-- Right pane: chat interface streaming assistant chunks
-- Divider between panes is draggable
+- **Left:** sidebar — workspace root, workspace switcher, documents list, workspace file tree (filters), status
+- **Center:** tabbed reader — Markdown / PDF, multiple open tabs (workspace docs + loose files; **Add to Workspace** on external tabs)
+- **Right:** chat — model picker (SDK-backed when using Cursor backend), streaming assistant, composer
+- **Layout:** 3-pane shell with resizable sidebar divider
 
 ## Test
 

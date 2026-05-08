@@ -18,7 +18,7 @@ interface CursorSdkBackendOptions {
 export class CursorSdkBackend implements AgentBackend {
   private readonly sessions = new Map<
     string,
-    { agent: SDKAgent; cwd: string; bookAgentConfigPath: string; systemPrompt: string }
+    { agent: SDKAgent; cwd: string; bookAgentConfigPath: string; systemPrompt: string; modelId: string }
   >();
 
   constructor(private readonly options: CursorSdkBackendOptions) {}
@@ -27,10 +27,47 @@ export class CursorSdkBackend implements AgentBackend {
     const cwd = request?.cwd ?? this.options.cwd;
     const bookAgentConfigPath = request?.bookAgentConfigPath ?? this.options.bookAgentConfigPath;
     const systemPrompt = request?.systemPrompt?.trim() ?? "";
-    const agent = await this.createCursorAgent({ cwd, bookAgentConfigPath });
+    const modelId = request?.modelId?.trim() || this.options.cursorModelId || process.env.CURSOR_MODEL_ID || "default";
+    const agent = await this.createCursorAgent({ cwd, bookAgentConfigPath, modelId });
     const sessionId = newSessionId();
-    this.sessions.set(sessionId, { agent, cwd, bookAgentConfigPath, systemPrompt });
-    return { sessionId };
+    this.sessions.set(sessionId, { agent, cwd, bookAgentConfigPath, systemPrompt, modelId });
+    return { sessionId, modelId };
+  }
+
+  async listModels() {
+    const apiKey = this.options.cursorApiKey ?? process.env.CURSOR_API_KEY;
+    if (!apiKey) {
+      throw new Error("CURSOR_API_KEY is required to list models.");
+    }
+
+    let sdkModule: typeof import("@cursor/sdk");
+    try {
+      sdkModule = await import("@cursor/sdk");
+    } catch (error) {
+      throw new Error("Missing @cursor/sdk. Install it in apps/web before listing models.", { cause: error });
+    }
+
+    const raw = await sdkModule.Cursor.models.list({ apiKey });
+    const normalized = Array.isArray(raw)
+      ? raw
+      : Array.isArray((raw as { models?: unknown[] }).models)
+        ? (raw as { models: unknown[] }).models
+        : [];
+    const models = normalized
+      .map((entry) => {
+        if (typeof entry === "string") return entry;
+        if (entry && typeof entry === "object") {
+          const candidate = (entry as { id?: unknown; modelId?: unknown; slug?: unknown }).id
+            ?? (entry as { modelId?: unknown }).modelId
+            ?? (entry as { slug?: unknown }).slug;
+          return typeof candidate === "string" ? candidate : "";
+        }
+        return "";
+      })
+      .filter((model): model is string => Boolean(model))
+      .sort((a, b) => a.localeCompare(b));
+
+    return { models };
   }
 
   async *sendMessage(request: SendMessageRequest): AsyncIterable<AgentStreamEvent> {
@@ -55,9 +92,9 @@ export class CursorSdkBackend implements AgentBackend {
     yield { type: "done" };
   }
 
-  private async createCursorAgent(sessionOptions: { cwd: string; bookAgentConfigPath: string }): Promise<SDKAgent> {
+  private async createCursorAgent(sessionOptions: { cwd: string; bookAgentConfigPath: string; modelId: string }): Promise<SDKAgent> {
     const apiKey = this.options.cursorApiKey ?? process.env.CURSOR_API_KEY;
-    const modelId = this.options.cursorModelId ?? process.env.CURSOR_MODEL_ID ?? "default";
+    const modelId = sessionOptions.modelId;
     if (!apiKey) {
       throw new Error("CURSOR_API_KEY is required for CursorSdkBackend.");
     }

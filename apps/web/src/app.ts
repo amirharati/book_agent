@@ -11,7 +11,10 @@ interface CreateAppInput {
   workspaceRoot?: string;
 }
 
-const SKIP_DIRS = new Set([".git", "node_modules", ".venv", "dist", "__pycache__", ".mypy_cache"]);
+const SKIP_DIRS = new Set([".git", "node_modules", ".venv", "dist", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache"]);
+const SKIP_FILES_DEFAULT = new Set([".DS_Store", "Thumbs.db", ".gitignore", ".gitattributes"]);
+const SKIP_EXTENSIONS_DEFAULT = new Set([".pyc", ".pyo", ".class", ".o", ".obj", ".exe", ".dll", ".so"]);
+const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".bmp", ".tiff"]);
 const BOOK_AGENT_CONFIG_NAME = ".book_agent.json";
 const BOOK_WORKSPACE_STATE_NAME = ".book_workspace.json";
 const PROJECT_METADATA_NAME = "project.json";
@@ -86,6 +89,19 @@ export function createApp({ backend, backendName, workspaceRoot = process.cwd() 
       inputRoot: runtimeConfig.inputRoot,
       outputRoot: runtimeConfig.outputRoot,
     });
+  });
+
+  app.get("/api/models", async (_req, res, next) => {
+    try {
+      const result = await backend.listModels();
+      const models = Array.from(new Set(result.models.filter((model) => model.trim()))).sort((a, b) => a.localeCompare(b));
+      if (!models.includes("default")) {
+        models.unshift("default");
+      }
+      res.json({ models });
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.post("/api/config", async (req, res, next) => {
@@ -368,6 +384,82 @@ export function createApp({ backend, backendName, workspaceRoot = process.cwd() 
     }
   });
 
+  app.get("/api/workspaces/:workspaceId/documents/:documentId/content", async (req, res, next) => {
+    try {
+      const workspaceId = req.params.workspaceId;
+      const documentId = req.params.documentId;
+      const workspaceDir = path.join(runtimeConfig.workspaceRoot, workspaceId);
+      const state = await readBookWorkspaceState(workspaceDir);
+      if (!state) {
+        res.status(404).json({ error: "Workspace not found." });
+        return;
+      }
+      if (!state.documents.includes(documentId)) {
+        res.status(404).json({ error: "Document not found in workspace." });
+        return;
+      }
+      const config = await readBookAgentConfig(runtimeConfig.workspaceRoot);
+      const sourceDir = config.documents[documentId];
+      if (!sourceDir) {
+        res.status(404).json({ error: `Document path missing for ${documentId}` });
+        return;
+      }
+
+      const metadata = await readProjectMetadata(workspaceDir);
+      const metadataEntry = metadata?.documents.find((doc) => doc.id === documentId) ?? null;
+      let mdPath = metadataEntry?.mdPath ?? "";
+      if (!mdPath) {
+        mdPath = await resolvePrimaryMarkdownPath(sourceDir);
+      }
+
+      const content = await fs.readFile(mdPath, "utf8");
+      res.json({
+        document: {
+          id: documentId,
+          name: metadataEntry?.name ?? path.basename(mdPath),
+          sourcePath: metadataEntry?.sourcePath ?? mdPath,
+          sourceDir,
+          mdPath,
+        },
+        content,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/workspaces/:workspaceId/files", async (req, res, next) => {
+    try {
+      const workspaceId = req.params.workspaceId;
+      const workspaceDir = path.join(runtimeConfig.workspaceRoot, workspaceId);
+      const state = await readBookWorkspaceState(workspaceDir);
+      if (!state) {
+        res.status(404).json({ error: "Workspace not found." });
+        return;
+      }
+
+      const hideImages = req.query.hideImages !== "false";
+      const hideHidden = req.query.hideHidden !== "false";
+      const customPatterns = typeof req.query.patterns === "string"
+        ? req.query.patterns.split(",").map((p) => p.trim()).filter(Boolean)
+        : [];
+
+      const tree = await buildWorkspaceFileTree(workspaceDir, {
+        hideImages,
+        hideHidden,
+        customPatterns,
+      });
+
+      res.json({
+        workspaceId,
+        workspacePath: workspaceDir,
+        tree,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.post("/api/workspaces/:workspaceId/copy", async (req, res, next) => {
     try {
       const workspaceId = req.params.workspaceId;
@@ -568,7 +660,7 @@ export function createApp({ backend, backendName, workspaceRoot = process.cwd() 
 
   app.post("/api/sessions", async (req, res, next) => {
     try {
-      const body = (req.body ?? {}) as { cwd?: unknown; bookAgentConfigPath?: unknown };
+      const body = (req.body ?? {}) as { cwd?: unknown; bookAgentConfigPath?: unknown; modelId?: unknown };
       const config = await readBookAgentConfig(runtimeConfig.workspaceRoot);
       const defaultBookAgentConfigPath = path.join(runtimeConfig.workspaceRoot, BOOK_AGENT_CONFIG_NAME);
       const requestedBookAgentConfigPath =
@@ -583,6 +675,10 @@ export function createApp({ backend, backendName, workspaceRoot = process.cwd() 
             : runtimeConfig.workspaceRoot;
       const requestedCwdStat = await fs.stat(requestedCwd).catch(() => null);
       const agentCwd = requestedCwdStat?.isDirectory() ? requestedCwd : runtimeConfig.workspaceRoot;
+      const requestedModelId =
+        typeof body.modelId === "string" && body.modelId.trim()
+          ? body.modelId.trim()
+          : undefined;
       const policyPrompt = await buildRepoPolicyPrompt(policySourceRoot);
       const runtimeContextPrompt = [
         "Runtime context:",
@@ -590,6 +686,7 @@ export function createApp({ backend, backendName, workspaceRoot = process.cwd() 
         `- current_workspace: ${config.current_workspace ?? "(none)"}`,
         `- book_agent_config: ${requestedBookAgentConfigPath}`,
         `- cwd: ${agentCwd}`,
+        `- model: ${requestedModelId ?? process.env.CURSOR_MODEL_ID ?? "default"}`,
       ].join("\n");
       const systemPrompt = [policyPrompt, runtimeContextPrompt].filter(Boolean).join("\n\n");
 
@@ -598,6 +695,7 @@ export function createApp({ backend, backendName, workspaceRoot = process.cwd() 
         cwd: agentCwd,
         bookAgentConfigPath: requestedBookAgentConfigPath,
         systemPrompt,
+        modelId: requestedModelId,
       });
       console.log(`[session] created session id=${result.sessionId}`);
       res.status(201).json(result);
@@ -1077,4 +1175,108 @@ function getErrorMessage(error: unknown): string {
 
 function describeError(error: unknown): string {
   return inspect(error, { depth: 4, breakLength: 120 });
+}
+
+interface FileTreeNode {
+  name: string;
+  path: string;
+  type: "file" | "directory";
+  extension?: string;
+  children?: FileTreeNode[];
+}
+
+interface FileTreeOptions {
+  hideImages: boolean;
+  hideHidden: boolean;
+  customPatterns: string[];
+}
+
+async function buildWorkspaceFileTree(
+  rootDir: string,
+  options: FileTreeOptions,
+): Promise<FileTreeNode[]> {
+  const { hideImages, hideHidden, customPatterns } = options;
+
+  const customPatternSet = new Set(customPatterns.map((p) => p.toLowerCase()));
+
+  function shouldSkipFile(name: string): boolean {
+    const lowerName = name.toLowerCase();
+
+    if (SKIP_FILES_DEFAULT.has(name)) {
+      return true;
+    }
+
+    if (hideHidden && name.startsWith(".")) {
+      return true;
+    }
+
+    const ext = path.extname(lowerName);
+    if (SKIP_EXTENSIONS_DEFAULT.has(ext)) {
+      return true;
+    }
+
+    if (hideImages && IMAGE_EXTENSIONS.has(ext)) {
+      return true;
+    }
+
+    if (customPatternSet.has(lowerName) || customPatternSet.has(ext)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  function shouldSkipDir(name: string): boolean {
+    if (SKIP_DIRS.has(name)) {
+      return true;
+    }
+    if (hideHidden && name.startsWith(".")) {
+      return true;
+    }
+    return false;
+  }
+
+  async function buildTree(dirPath: string): Promise<FileTreeNode[]> {
+    const entries = await fs.readdir(dirPath, { withFileTypes: true }).catch(() => []);
+    const nodes: FileTreeNode[] = [];
+
+    const sortedEntries = entries.sort((a, b) => {
+      if (a.isDirectory() && !b.isDirectory()) return -1;
+      if (!a.isDirectory() && b.isDirectory()) return 1;
+      return a.name.localeCompare(b.name);
+    });
+
+    for (const entry of sortedEntries) {
+      const absolutePath = path.join(dirPath, entry.name);
+      const relativePath = path.relative(rootDir, absolutePath);
+
+      if (entry.isDirectory()) {
+        if (shouldSkipDir(entry.name)) {
+          continue;
+        }
+        const children = await buildTree(absolutePath);
+        nodes.push({
+          name: entry.name,
+          path: relativePath,
+          type: "directory",
+          children,
+        });
+      } else if (entry.isFile()) {
+        if (shouldSkipFile(entry.name)) {
+          continue;
+        }
+        const ext = path.extname(entry.name).toLowerCase();
+        nodes.push({
+          name: entry.name,
+          path: relativePath,
+          type: "file",
+          extension: ext || undefined,
+        });
+      }
+    }
+
+    return nodes;
+  }
+
+  return buildTree(rootDir);
 }

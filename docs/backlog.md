@@ -15,9 +15,9 @@ Suggested order—see **[PRD_WEB_APP_CURSOR_SDK.md](PRD_WEB_APP_CURSOR_SDK.md)**
 
 Session note: Cursor-backed create-session + stream tested successfully with `CURSOR_API_KEY` and a valid `CURSOR_MODEL_ID` (e.g. `default`).
 
-**v0 UI progress (apps/web)** — usable first slice, still evolving:
+**v0 UI progress (apps/web)** — Research Studio shell shipped 2026-05-08:
 
-- Two-pane workspace (resize), chat via REST + SSE, setup dashboard.
+- **3-pane layout** (sidebar + reader + chat), tabbed reader, workspace file tree, dynamic model list (`/api/models`), external files + **Add to Workspace**, workspace/root switch refreshes documents + file explorer + tabs.
 - **Workspace-first flow**: set root -> create/select workspace -> add docs -> set current doc -> render.
 - Canonical config/state wiring in web flow:
   - root config: **`<root>/.book_agent.json`**
@@ -29,6 +29,26 @@ Session note: Cursor-backed create-session + stream tested successfully with `CU
 - Session context now refreshes on workspace/doc selection and passes dynamic `cwd` + `BOOK_AGENT_CONFIG` path into SDK session creation.
 - Web sessions now load repo policy context from **`.cursor/rules/book-agent.mdc`** and **`.cursor/skills/**/SKILL.md`** and inject it as system guidance when creating SDK sessions.
 - **Deferred:** Chat/agent book-grounding quality still needs dedicated work (tool-first prompting, section-aware context, stricter checks for generic responses).
+
+---
+
+## Completed — Research Studio UI polish (2026-05-08)
+
+**Goal:** One-session UI/UX cleanup for `apps/web` without persistence redesign.
+
+**Shipped:** Cursor-like **Research Studio** shell; sidebar workspace UX; context chips; tabbed reader (workspace docs + loose files); polished chat + model picker (SDK-backed list); **Workspace Files** tree with filters; **Add to Workspace** on external tabs; switching workspace or root updates document list, file tree, and tabs (no stale counts).
+
+**Archive:** Plan + handoff retained in **[TEMP_UI_POLISH_SESSION.md](TEMP_UI_POLISH_SESSION.md)** (marked complete).
+
+### Web UI follow-ups (post–Research Studio polish)
+
+Refine as needed—not blocking core flow:
+
+- Keyboard shortcuts (e.g. close tab, cycle tabs).
+- Collapsible sidebar sections.
+- Unobtrusive **chat ↔ active document** context indicator.
+- Custom file-tree filter patterns (beyond hide images / hidden files).
+- Remove document from workspace, richer library UX—defer until workflow demands it.
 
 ---
 

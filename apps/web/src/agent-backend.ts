@@ -14,12 +14,18 @@ export type AgentStreamEvent =
 
 export interface CreateSessionResult {
   sessionId: string;
+  modelId?: string;
 }
 
 export interface CreateSessionRequest {
   cwd?: string;
   bookAgentConfigPath?: string;
   systemPrompt?: string;
+  modelId?: string;
+}
+
+export interface ListModelsResult {
+  models: string[];
 }
 
 export interface SendMessageRequest {
@@ -30,6 +36,7 @@ export interface SendMessageRequest {
 
 export interface AgentBackend {
   createSession(request?: CreateSessionRequest): Promise<CreateSessionResult>;
+  listModels(): Promise<ListModelsResult>;
   sendMessage(request: SendMessageRequest): AsyncIterable<AgentStreamEvent>;
 }
 

@@ -16,6 +16,10 @@ export class EchoBackend implements AgentBackend {
     return { sessionId };
   }
 
+  async listModels() {
+    return { models: ["default"] };
+  }
+
   async *sendMessage(request: SendMessageRequest): AsyncIterable<AgentStreamEvent> {
     if (!this.sessions.has(request.sessionId)) {
       yield { type: "error", message: `Unknown session: ${request.sessionId}` };

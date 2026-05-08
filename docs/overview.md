@@ -17,7 +17,7 @@ Landing page for **`docs/`** — what to open first, what lives where.
 
 | Doc | Purpose |
 |-----|---------|
-| **[backlog.md](backlog.md)** | Short themes + **“Start next session”** checklist (web backend/UI). |
+| **[backlog.md](backlog.md)** | Short themes + **“Start next session”** checklist (web backend/UI); includes **Research Studio UI polish** (done) + follow-ups. |
 | **[PRD_WEB_APP_CURSOR_SDK.md](PRD_WEB_APP_CURSOR_SDK.md)** | Browser-first app sketch: Cursor SDK, MCP, credentials, execution options, reading/sync/annotations direction. |
 
 ---

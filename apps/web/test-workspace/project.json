@@ -1,0 +1,15 @@
+{
+  "project_id": "test-workspace",
+  "project_name": "test-workspace",
+  "created_at": "2026-05-08T18:04:41.357Z",
+  "documents": [
+    {
+      "id": "readme",
+      "name": "README.md",
+      "sourcePath": "/Users/amir/Dropbox/CodingProjects/book_agent/README.md",
+      "sourceDir": "/Users/amir/Dropbox/CodingProjects/book_agent",
+      "mdPath": "/Users/amir/Dropbox/CodingProjects/book_agent/README.md",
+      "addedAt": "2026-05-08T18:05:46.480Z"
+    }
+  ]
+}
