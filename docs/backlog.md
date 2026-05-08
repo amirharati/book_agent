@@ -25,6 +25,39 @@ Session note: Cursor-backed create-session + stream tested successfully with `CU
 
 ---
 
+## Next up — web app (easy first)
+
+**Ordering:** Finish **agent/workspace coherence** before polishing persistence or richer UX. Details below are **TBD until specced**; no implementation commitment in this edit.
+
+### 1. Agent + workspace coherence (**immediate next**)
+
+**Goal:** The AI reliably has **operational workspace context**: **`cwd`** (repo or book folder—TBD), **current document / book root**, **output root** wired to **`_resolved_output_dir`** when using **book-agent**, and MCP tools (`get_config`, `read`, `toc`, …) usable without the user guessing paths.
+
+**Design questions (answer before coding):**
+
+- How the UI-selected **Markdown folder** ties to **`add_document`** / **`create_workspace`** / **`set_workspace_current_document`** vs **prompt-only** context.
+- Whether the server **bootstrap or updates** `.book_agent.json`, or assumes an existing registry.
+- **`WORKSPACE_ROOT`** for **Cursor SDK** vs **book-agent workspace id** naming—one story, not two divergent notions of “workspace.”
+
+**Done when:** Open book → ask a concrete question answerable via **`read`**/TOC → agent uses tools and respects **artifact output** rules where applicable.
+
+### 2. Light persistence (**after Phase 1 works**)
+
+**Goal:** Lowest-friction continuity: **last-open document path**, **last output folder**, optional **UI prefs** (pane width). Decide **browser `localStorage` vs tiny server-side store** later.
+
+Keep **SDK session persistence** (**`sessionId` ↔ agent**, **`Agent.resume`**) separate unless we explicitly merge—“same chat after refresh” vs “same file open.”
+
+### 3. UX / product shape (**later — explore with you**)
+
+- **Opening model:** Keep “open `.md` file/folder” vs move to explicit **projects** / **registered workspaces**.
+- **Library:** Named / pinned workspaces (shortcut to folder + outputs + MCP config snapshot—TBD).
+- **Tabs (optional):** Multiple documents under one workspace, shared outputs vs per-document overrides.
+- Fold in **TOC / section-linked reader**, **PDF**, and retiring the temporary path-picker UX when **book-agent** path is canonical.
+
+Keep **easy path first**: Phase **1**, then **2**, then decide how much of **3** is necessary for v1.
+
+---
+
 ## Reliability & policy
 
 - **Rule adherence:** LLM agents can still write outside **`_resolved_output_dir`** despite **`book-agent.mdc`**. Later: validation hooks, CI on repo layout, or in-app path checks (web PRD phase).
@@ -36,7 +69,7 @@ Session note: Cursor-backed create-session + stream tested successfully with `CU
 
 - **Web app + Cursor SDK:** Spec in **[PRD_WEB_APP_CURSOR_SDK.md](PRD_WEB_APP_CURSOR_SDK.md)**. **Partially implemented** in **`apps/web`**: server wraps **`@cursor/sdk`**, UI uses HTTP + SSE, reader shows rendered MD + figures; artifact paths and agent book-awareness still need wiring to **`_resolved_output_dir`** / **book-agent** tools (**see “Temporary workflow”** above).
 - **Replace v0 MD workflow:** Move from “pick filesystem path” to **book project**: register document → workspace output → TOC/sections/`read`; keep modal UX only where still appropriate (exports, attachments).
-- **Chat ↔ book context (next):** Ground the agent in the **open** markdown (path, optional section) and **book-agent** tools (`get_config`, `read`, TOC) so Q&A uses the book—not generic knowledge only; may require UI to pass **output** into agent env and/or a small “context” API.
+- **Chat ↔ book context:** See **Next up — web app § 1** (agent grounded via **`read`** / TOC / `get_config` + one clear **workspace** story—not prompt-only path hints).
 - **Agent abstraction:** **`AgentBackend`** (or equivalent) so the UI stays host-agnostic; Cursor is the first impl; aligns with PRD §12.6 / multi-host MCP story.
 - **PDF → book:** **[marker_server](https://github.com/amirharati/marker_server)** in **[USAGE.md](USAGE.md)**; optional script: job output → **`add_document`** path conventions.
 - **Reading UX (web):** Canonical **section / index model** for MD render, PDF viewer, chat context; optional **later HTML** projection—PRD §12.
