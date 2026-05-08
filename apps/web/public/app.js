@@ -83,6 +83,7 @@ let modalCurrentPath = "";
 let modalParentPath = null;
 let modalMode = "pick-workspace-root";
 let selectedModelId = "default";
+let currentSessionContext = null;
 
 // Tab state
 let openTabs = [];
@@ -129,6 +130,32 @@ function updateContextChips() {
     documentChip.title = "No document open";
     documentChip.classList.remove("active");
   }
+}
+
+function clearChatSessionState(statusText = "Open a workspace to start") {
+  sessionId = null;
+  currentSessionContext = null;
+  history.length = 0;
+  chatMessages.innerHTML = "";
+  sessionStatus.textContent = statusText;
+  sessionStatus.title = "";
+  sendButton.disabled = true;
+  messageInput.disabled = true;
+  newSessionButton.disabled = !currentWorkspace;
+}
+
+function renderSessionStatus(modelId, runtimeContext) {
+  const modelLabel = formatModelName(modelId || selectedModelId);
+  const shortSessionId = runtimeContext?.sessionShortId || (sessionId ? String(sessionId).slice(0, 8) : "n/a");
+  sessionStatus.textContent = `${modelLabel} · ${shortSessionId}`;
+  sessionStatus.title = [
+    `session: ${runtimeContext?.sessionId || sessionId || "(none)"}`,
+    `workspace: ${runtimeContext?.currentWorkspaceId || currentWorkspace?.id || "(none)"}`,
+    `document: ${runtimeContext?.currentDocumentId || "(none)"}${runtimeContext?.currentDocumentName ? ` (${runtimeContext.currentDocumentName})` : ""}`,
+    `cwd: ${runtimeContext?.cwd || "(none)"}`,
+    `book_agent_config: ${runtimeContext?.bookAgentConfigPath || "(none)"}`,
+    `resolved_output_dir: ${runtimeContext?.resolvedOutputDir || "(none)"}`,
+  ].join("\n");
 }
 
 function loadSelectedModel() {
@@ -513,6 +540,7 @@ async function saveWorkspaceRoot() {
   openTabs = [];
   activeTabId = null;
   workspaceFileTree = [];
+  clearChatSessionState("Open a workspace to start");
   renderTabs();
   showPlaceholder();
   await refreshWorkspaceList();
@@ -809,6 +837,9 @@ async function refreshWorkspaceList() {
       currentWorkspace = match;
     }
   }
+  if (!currentWorkspace) {
+    clearChatSessionState("Open a workspace to start");
+  }
   
   renderWorkspaceOptions();
   renderDocumentList();
@@ -882,7 +913,10 @@ async function openSelectedWorkspace() {
   await loadWorkspaceFiles();
   updateContextChips();
   updateStatus(`Opened workspace: ${currentWorkspace.name}`);
-  await refreshChatSession();
+  const shouldRefreshSession = previousWorkspaceId !== currentWorkspace.id || !sessionId;
+  if (shouldRefreshSession) {
+    await refreshChatSession();
+  }
   
   if (currentWorkspace.currentDocumentId && currentWorkspace.documents) {
     const doc = currentWorkspace.documents.find(d => d.id === currentWorkspace.currentDocumentId);
@@ -981,14 +1015,13 @@ async function streamAssistantReply(userText) {
 }
 
 async function initializeChat() {
-  sessionStatus.textContent = "Open a workspace to start";
-  sendButton.disabled = true;
-  messageInput.disabled = true;
+  clearChatSessionState("Open a workspace to start");
   newSessionButton.disabled = true;
 }
 
 async function refreshChatSession() {
   if (!currentWorkspace) {
+    clearChatSessionState("Open a workspace to start");
     return;
   }
   
@@ -1007,18 +1040,16 @@ async function refreshChatSession() {
     });
     
     sessionId = result.sessionId;
+    currentSessionContext = result.runtimeContext ?? null;
     history.length = 0;
     chatMessages.innerHTML = "";
     const activeModel = result.modelId || selectedModelId;
-    sessionStatus.textContent = `${formatModelName(activeModel)}`;
+    renderSessionStatus(activeModel, currentSessionContext);
     sendButton.disabled = false;
     messageInput.disabled = false;
     newSessionButton.disabled = false;
   } catch (error) {
-    sessionStatus.textContent = `Session error`;
-    sendButton.disabled = true;
-    messageInput.disabled = true;
-    newSessionButton.disabled = !currentWorkspace;
+    clearChatSessionState("Session error");
     handleError(error);
   }
 }

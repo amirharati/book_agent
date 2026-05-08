@@ -60,6 +60,8 @@ Refine as needed—not blocking core flow:
 
 **Goal:** The AI reliably has **operational workspace context**: **`cwd`** (repo or book folder—TBD), **current document / book root**, **output root** wired to **`_resolved_output_dir`** when using **book-agent**, and MCP tools (`get_config`, `read`, `toc`, …) usable without the user guessing paths.
 
+Hardening session completed on 2026-05-08; implementation shipped in `apps/web` (runtime context surface, tool-first prompt guardrails, minimal session churn reduction, warn-level path-policy logging).
+
 **Design questions (answer before coding):**
 
 - How the UI-selected **Markdown folder** ties to **`add_document`** / **`create_workspace`** / **`set_workspace_current_document`** vs **prompt-only** context.
@@ -89,7 +91,7 @@ Keep **easy path first**: Phase **1**, then **2**, then decide how much of **3**
 
 ## Reliability & policy
 
-- **Rule adherence:** LLM agents can still write outside **`_resolved_output_dir`** despite **`book-agent.mdc`**. Later: validation hooks, CI on repo layout, or in-app path checks (web PRD phase).
+- **Rule adherence:** LLM agents can still write outside **`_resolved_output_dir`** despite **`book-agent.mdc`**. Current web app now logs warn-level drift on `mkdir` outside resolved output root; next step is hard enforcement/interceptors for artifact writes.
 - **Context visibility (real issue observed):** Process cwd vs SDK session cwd can be misunderstood in chat/debugging. Add explicit “runtime context” display in UI/API logs (`session cwd`, `book config path`, selected workspace/doc) to avoid false assumptions.
 - **Legacy prototype artifacts:** `outputs/web-workspaces/**` and `workspace.json` are from older web prototype flow. Keep compatibility if needed, but migrate/clean to avoid confusion with canonical workspace files.
 - **Global installs:** After clone or new machine: **`~/.cursor/mcp.json`**, **`~/.cursor/rules/`**, optional **`~/.cursor/skills/`** symlink to this repo’s rule/skill copies—see **[USAGE.md](USAGE.md)**.

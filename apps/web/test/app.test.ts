@@ -7,7 +7,7 @@ describe("web backend API", () => {
   it("serves the chat shell at root", async () => {
     const app = createApp({ backend: new EchoBackend(), backendName: "echo" });
     const response = await request(app).get("/").expect(200);
-    expect(response.text).toContain("Book Agent Web Chat");
+    expect(response.text).toContain("Research Studio");
   });
 
   it("creates sessions and streams responses over SSE", async () => {
@@ -15,6 +15,18 @@ describe("web backend API", () => {
 
     const sessionResponse = await request(app).post("/api/sessions").expect(201);
     expect(sessionResponse.body.sessionId).toBeTypeOf("string");
+    expect(sessionResponse.body.runtimeContext).toMatchObject({
+      sessionId: sessionResponse.body.sessionId,
+      sessionShortId: sessionResponse.body.sessionId.slice(0, 8),
+    });
+
+    const contextResponse = await request(app)
+      .get(`/api/sessions/${sessionResponse.body.sessionId}/context`)
+      .expect(200);
+    expect(contextResponse.body.context).toMatchObject({
+      sessionId: sessionResponse.body.sessionId,
+      sessionShortId: sessionResponse.body.sessionId.slice(0, 8),
+    });
 
     const streamResponse = await request(app)
       .post(`/api/sessions/${sessionResponse.body.sessionId}/messages/stream`)

@@ -47,6 +47,20 @@ interface ProjectMetadata {
   documents: ProjectDocumentState[];
 }
 
+interface SessionRuntimeContext {
+  sessionId: string;
+  sessionShortId: string;
+  workspaceRoot: string;
+  currentWorkspaceId: string | null;
+  currentWorkspacePath: string | null;
+  currentDocumentId: string | null;
+  currentDocumentName: string | null;
+  cwd: string;
+  bookAgentConfigPath: string;
+  resolvedOutputDir: string | null;
+  modelId: string;
+}
+
 export function createApp({ backend, backendName, workspaceRoot = process.cwd() }: CreateAppInput) {
   const app = express();
   const staticDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../public");
@@ -59,6 +73,7 @@ export function createApp({ backend, backendName, workspaceRoot = process.cwd() 
     outputRoot: path.join(resolvedWorkspaceRoot, "outputs"),
     workspaceRoot: resolvedWorkspaceRoot,
   };
+  const sessionRuntimeContexts = new Map<string, SessionRuntimeContext>();
 
   app.use((req, res, next) => {
     const shouldLog = req.path === "/health" || req.path.startsWith("/api/");
@@ -160,6 +175,15 @@ export function createApp({ backend, backendName, workspaceRoot = process.cwd() 
     } catch (error) {
       next(error);
     }
+  });
+
+  app.get("/api/sessions/:sessionId/context", async (req, res) => {
+    const context = sessionRuntimeContexts.get(req.params.sessionId);
+    if (!context) {
+      res.status(404).json({ error: "Session not found." });
+      return;
+    }
+    res.json({ context });
   });
 
   app.post("/api/workspaces", async (req, res, next) => {
@@ -608,6 +632,12 @@ export function createApp({ backend, backendName, workspaceRoot = process.cwd() 
       }
 
       const newDir = path.join(parentDir, trimmedName);
+      const policyOutputDir = await resolvePolicyOutputDir(runtimeConfig.workspaceRoot);
+      if (policyOutputDir && !isWithinPath(policyOutputDir, newDir)) {
+        console.warn(
+          `[policy] mkdir path outside resolved_output_dir (warn): requested=${newDir} resolved_output_dir=${policyOutputDir}`,
+        );
+      }
       await fs.mkdir(newDir, { recursive: true });
       res.json({ path: newDir });
     } catch (error) {
@@ -679,16 +709,31 @@ export function createApp({ backend, backendName, workspaceRoot = process.cwd() 
         typeof body.modelId === "string" && body.modelId.trim()
           ? body.modelId.trim()
           : undefined;
+      const activeModelId = requestedModelId ?? process.env.CURSOR_MODEL_ID ?? "default";
       const policyPrompt = await buildRepoPolicyPrompt(policySourceRoot);
+      const groundedBehaviorPrompt = [
+        "Grounding behavior (high priority):",
+        "- For questions about the active document/workspace, call get_config first and then use toc/search/read before answering.",
+        "- If evidence is missing in the active document/workspace, do not fabricate. State insufficient evidence and suggest the next retrieval step.",
+        "- For artifact creation without an explicit path, resolve _resolved_output_dir from get_config and write there by default.",
+      ].join("\n");
+      const currentWorkspacePayload = config.current_workspace
+        ? await buildCanonicalWorkspaceResponse(runtimeConfig.workspaceRoot, config.current_workspace, config)
+        : null;
+      const currentDocument = currentWorkspacePayload?.currentDocument ?? null;
+      const resolvedOutputDir = currentWorkspacePayload?.outputRoot ?? null;
       const runtimeContextPrompt = [
         "Runtime context:",
         `- workspace_root: ${runtimeConfig.workspaceRoot}`,
         `- current_workspace: ${config.current_workspace ?? "(none)"}`,
+        `- current_document_id: ${currentDocument?.id ?? "(none)"}`,
+        `- current_document_name: ${currentDocument?.name ?? "(none)"}`,
+        `- resolved_output_dir: ${resolvedOutputDir ?? "(none)"}`,
         `- book_agent_config: ${requestedBookAgentConfigPath}`,
         `- cwd: ${agentCwd}`,
-        `- model: ${requestedModelId ?? process.env.CURSOR_MODEL_ID ?? "default"}`,
+        `- model: ${activeModelId}`,
       ].join("\n");
-      const systemPrompt = [policyPrompt, runtimeContextPrompt].filter(Boolean).join("\n\n");
+      const systemPrompt = [policyPrompt, groundedBehaviorPrompt, runtimeContextPrompt].filter(Boolean).join("\n\n");
 
       console.log(`[session] creating session using backend=${backendName}`);
       const result = await backend.createSession({
@@ -697,8 +742,24 @@ export function createApp({ backend, backendName, workspaceRoot = process.cwd() 
         systemPrompt,
         modelId: requestedModelId,
       });
-      console.log(`[session] created session id=${result.sessionId}`);
-      res.status(201).json(result);
+      const runtimeContext: SessionRuntimeContext = {
+        sessionId: result.sessionId,
+        sessionShortId: result.sessionId.slice(0, 8),
+        workspaceRoot: runtimeConfig.workspaceRoot,
+        currentWorkspaceId: config.current_workspace,
+        currentWorkspacePath: config.current_workspace ? path.join(runtimeConfig.workspaceRoot, config.current_workspace) : null,
+        currentDocumentId: currentDocument?.id ?? null,
+        currentDocumentName: currentDocument?.name ?? null,
+        cwd: agentCwd,
+        bookAgentConfigPath: requestedBookAgentConfigPath,
+        resolvedOutputDir,
+        modelId: result.modelId ?? activeModelId,
+      };
+      sessionRuntimeContexts.set(result.sessionId, runtimeContext);
+      console.log(
+        `[session] created id=${result.sessionId} short=${runtimeContext.sessionShortId} workspace=${runtimeContext.currentWorkspaceId ?? "(none)"} doc=${runtimeContext.currentDocumentId ?? "(none)"} cwd=${runtimeContext.cwd} config=${runtimeContext.bookAgentConfigPath}`,
+      );
+      res.status(201).json({ ...result, runtimeContext });
     } catch (error) {
       next(error);
     }
@@ -856,6 +917,21 @@ async function resolveExistingDirectory(pathValue: string, workspaceRoot: string
     throw new Error(`Directory does not exist: ${candidate}`);
   }
   return candidate;
+}
+
+function isWithinPath(rootPath: string, candidatePath: string): boolean {
+  const root = path.resolve(rootPath);
+  const candidate = path.resolve(candidatePath);
+  return candidate === root || candidate.startsWith(`${root}${path.sep}`);
+}
+
+async function resolvePolicyOutputDir(workspaceRoot: string): Promise<string | null> {
+  const config = await readBookAgentConfig(workspaceRoot);
+  if (!config.current_workspace) {
+    return null;
+  }
+  const payload = await buildCanonicalWorkspaceResponse(workspaceRoot, config.current_workspace, config);
+  return payload?.outputRoot ?? null;
 }
 
 function getPathQuery(req: express.Request): string {
