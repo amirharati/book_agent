@@ -12,14 +12,49 @@ interface CreateAppInput {
 }
 
 const SKIP_DIRS = new Set([".git", "node_modules", ".venv", "dist", "__pycache__", ".mypy_cache"]);
+const BOOK_AGENT_CONFIG_NAME = ".book_agent.json";
+const BOOK_WORKSPACE_STATE_NAME = ".book_workspace.json";
+const PROJECT_METADATA_NAME = "project.json";
+
+interface BookAgentConfig {
+  documents: Record<string, string>;
+  output_root: string;
+  current_workspace: string | null;
+}
+
+interface BookWorkspaceState {
+  documents: string[];
+  current_document: string | null;
+  output_subdirs: Record<string, string>;
+}
+
+interface ProjectDocumentState {
+  id: string;
+  name: string;
+  sourcePath: string;
+  sourceDir: string;
+  mdPath: string;
+  addedAt: string;
+}
+
+interface ProjectMetadata {
+  project_id: string;
+  project_name: string;
+  created_at: string;
+  documents: ProjectDocumentState[];
+}
 
 export function createApp({ backend, backendName, workspaceRoot = process.cwd() }: CreateAppInput) {
   const app = express();
   const staticDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../public");
   const resolvedWorkspaceRoot = path.resolve(workspaceRoot);
+  const policySourceRoot = process.env.BOOK_AGENT_POLICY_ROOT
+    ? path.resolve(process.env.BOOK_AGENT_POLICY_ROOT)
+    : resolvedWorkspaceRoot;
   const runtimeConfig = {
     inputRoot: path.join(resolvedWorkspaceRoot, "inputs"),
     outputRoot: path.join(resolvedWorkspaceRoot, "outputs"),
+    workspaceRoot: resolvedWorkspaceRoot,
   };
 
   app.use((req, res, next) => {
@@ -69,6 +104,299 @@ export function createApp({ backend, backendName, workspaceRoot = process.cwd() 
         workspaceRoot: resolvedWorkspaceRoot,
         inputRoot: runtimeConfig.inputRoot,
         outputRoot: runtimeConfig.outputRoot,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/workspaces/root", (_req, res) => {
+    res.json({ workspaceRoot: runtimeConfig.workspaceRoot });
+  });
+
+  app.post("/api/workspaces/root", async (req, res, next) => {
+    try {
+      const body = req.body as { workspaceRoot?: unknown };
+      if (typeof body.workspaceRoot !== "string" || !body.workspaceRoot.trim()) {
+        res.status(400).json({ error: "workspaceRoot must be a non-empty string." });
+        return;
+      }
+      const nextRoot = path.resolve(body.workspaceRoot.trim());
+      await fs.mkdir(nextRoot, { recursive: true });
+      runtimeConfig.workspaceRoot = nextRoot;
+      await ensureBookAgentConfig(runtimeConfig.workspaceRoot);
+      res.json({ workspaceRoot: runtimeConfig.workspaceRoot });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/workspaces", async (_req, res, next) => {
+    try {
+      await fs.mkdir(runtimeConfig.workspaceRoot, { recursive: true });
+      const config = await readBookAgentConfig(runtimeConfig.workspaceRoot);
+      const workspaces = await listCanonicalWorkspaces(runtimeConfig.workspaceRoot, config);
+      res.json({
+        workspaceRoot: runtimeConfig.workspaceRoot,
+        currentWorkspace: config.current_workspace,
+        workspaces,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/workspaces", async (req, res, next) => {
+    try {
+      const body = req.body as { name?: unknown; workspaceId?: unknown };
+      if (typeof body.name !== "string" || !body.name.trim()) {
+        res.status(400).json({ error: "name is required." });
+        return;
+      }
+      const rawId = typeof body.workspaceId === "string" && body.workspaceId.trim()
+        ? body.workspaceId
+        : body.name;
+      const workspaceId = slugify(rawId);
+      if (!workspaceId) {
+        res.status(400).json({ error: "workspaceId/name produced an empty id." });
+        return;
+      }
+
+      await ensureBookAgentConfig(runtimeConfig.workspaceRoot);
+      const workspaceDir = path.join(runtimeConfig.workspaceRoot, workspaceId);
+      const exists = await fs.stat(workspaceDir).catch(() => null);
+      if (exists) {
+        res.status(409).json({ error: `Workspace already exists: ${workspaceId}` });
+        return;
+      }
+      await fs.mkdir(path.join(workspaceDir, "artifacts"), { recursive: true });
+
+      const workspaceState: BookWorkspaceState = {
+        documents: [],
+        current_document: null,
+        output_subdirs: {},
+      };
+      await writeBookWorkspaceState(workspaceDir, workspaceState);
+      await writeProjectMetadata(workspaceDir, {
+        project_id: workspaceId,
+        project_name: body.name.trim(),
+        created_at: new Date().toISOString(),
+        documents: [],
+      });
+
+      const config = await readBookAgentConfig(runtimeConfig.workspaceRoot);
+      config.current_workspace = workspaceId;
+      config.output_root = ".";
+      await writeBookAgentConfig(runtimeConfig.workspaceRoot, config);
+      res.status(201).json(await buildCanonicalWorkspaceResponse(runtimeConfig.workspaceRoot, workspaceId, config));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/workspaces/:workspaceId", async (req, res, next) => {
+    try {
+      const workspaceId = req.params.workspaceId;
+      const config = await readBookAgentConfig(runtimeConfig.workspaceRoot);
+      const payload = await buildCanonicalWorkspaceResponse(runtimeConfig.workspaceRoot, workspaceId, config);
+      if (!payload) {
+        res.status(404).json({ error: "Workspace not found." });
+        return;
+      }
+      res.json(payload);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/workspaces/:workspaceId/select", async (req, res, next) => {
+    try {
+      const workspaceId = req.params.workspaceId;
+      const payload = await buildCanonicalWorkspaceResponse(
+        runtimeConfig.workspaceRoot,
+        workspaceId,
+        await readBookAgentConfig(runtimeConfig.workspaceRoot),
+      );
+      if (!payload) {
+        res.status(404).json({ error: "Workspace not found." });
+        return;
+      }
+      const config = await readBookAgentConfig(runtimeConfig.workspaceRoot);
+      config.current_workspace = workspaceId;
+      config.output_root = ".";
+      await writeBookAgentConfig(runtimeConfig.workspaceRoot, config);
+      const refreshed = await buildCanonicalWorkspaceResponse(runtimeConfig.workspaceRoot, workspaceId, config);
+      res.json(refreshed);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/workspaces/:workspaceId/documents", async (req, res, next) => {
+    try {
+      const workspaceId = req.params.workspaceId;
+      const workspaceDir = path.join(runtimeConfig.workspaceRoot, workspaceId);
+      const state = await readBookWorkspaceState(workspaceDir);
+      if (!state) {
+        res.status(404).json({ error: "Workspace not found." });
+        return;
+      }
+      const body = req.body as { sourcePath?: unknown };
+      if (typeof body.sourcePath !== "string" || !body.sourcePath.trim()) {
+        res.status(400).json({ error: "sourcePath is required." });
+        return;
+      }
+      const sourcePath = path.resolve(body.sourcePath);
+      const sourceStat = await fs.stat(sourcePath).catch(() => null);
+      if (!sourceStat || !sourceStat.isFile() || !isMarkdownFile(sourcePath)) {
+        res.status(400).json({ error: "sourcePath must point to a markdown file." });
+        return;
+      }
+      const sourceDir = path.dirname(sourcePath);
+      const documentIdBase = slugify(path.parse(sourcePath).name) || `doc-${Date.now().toString(36)}`;
+      const documentId = await nextAvailableDocumentId(documentIdBase, runtimeConfig.workspaceRoot);
+
+      const config = await readBookAgentConfig(runtimeConfig.workspaceRoot);
+      config.documents[documentId] = sourceDir;
+      config.current_workspace = workspaceId;
+      config.output_root = ".";
+      await writeBookAgentConfig(runtimeConfig.workspaceRoot, config);
+
+      if (!state.documents.includes(documentId)) {
+        state.documents.push(documentId);
+      }
+      if (!state.current_document) {
+        state.current_document = documentId;
+      }
+      await writeBookWorkspaceState(workspaceDir, state);
+
+      const metadata = (await readProjectMetadata(workspaceDir)) ?? {
+        project_id: workspaceId,
+        project_name: workspaceId,
+        created_at: new Date().toISOString(),
+        documents: [],
+      };
+      metadata.documents = metadata.documents.filter((doc) => doc.id !== documentId);
+      metadata.documents.push({
+        id: documentId,
+        name: path.basename(sourcePath),
+        sourcePath,
+        sourceDir,
+        mdPath: sourcePath,
+        addedAt: new Date().toISOString(),
+      });
+      await writeProjectMetadata(workspaceDir, metadata);
+
+      res.status(201).json(await buildCanonicalWorkspaceResponse(runtimeConfig.workspaceRoot, workspaceId, config));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/workspaces/:workspaceId/current-document", async (req, res, next) => {
+    try {
+      const workspaceId = req.params.workspaceId;
+      const workspaceDir = path.join(runtimeConfig.workspaceRoot, workspaceId);
+      const state = await readBookWorkspaceState(workspaceDir);
+      if (!state) {
+        res.status(404).json({ error: "Workspace not found." });
+        return;
+      }
+      const body = req.body as { documentId?: unknown };
+      if (typeof body.documentId !== "string" || !body.documentId.trim()) {
+        res.status(400).json({ error: "documentId is required." });
+        return;
+      }
+      if (!state.documents.includes(body.documentId)) {
+        res.status(404).json({ error: "Document not found in workspace." });
+        return;
+      }
+      state.current_document = body.documentId;
+      await writeBookWorkspaceState(workspaceDir, state);
+
+      const config = await readBookAgentConfig(runtimeConfig.workspaceRoot);
+      config.current_workspace = workspaceId;
+      config.output_root = ".";
+      await writeBookAgentConfig(runtimeConfig.workspaceRoot, config);
+      res.json(await buildCanonicalWorkspaceResponse(runtimeConfig.workspaceRoot, workspaceId, config));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/workspaces/:workspaceId/current-document/content", async (req, res, next) => {
+    try {
+      const workspaceId = req.params.workspaceId;
+      const workspaceDir = path.join(runtimeConfig.workspaceRoot, workspaceId);
+      const state = await readBookWorkspaceState(workspaceDir);
+      if (!state) {
+        res.status(404).json({ error: "Workspace not found." });
+        return;
+      }
+      const currentDocumentId = state.current_document;
+      if (!currentDocumentId) {
+        res.status(404).json({ error: "No current document selected." });
+        return;
+      }
+      const config = await readBookAgentConfig(runtimeConfig.workspaceRoot);
+      const sourceDir = config.documents[currentDocumentId];
+      if (!sourceDir) {
+        res.status(404).json({ error: `Document path missing for ${currentDocumentId}` });
+        return;
+      }
+
+      const metadata = await readProjectMetadata(workspaceDir);
+      const metadataEntry = metadata?.documents.find((doc) => doc.id === currentDocumentId) ?? null;
+      let mdPath = metadataEntry?.mdPath ?? "";
+      if (!mdPath) {
+        mdPath = await resolvePrimaryMarkdownPath(sourceDir);
+      }
+
+      const content = await fs.readFile(mdPath, "utf8");
+      res.json({
+        document: {
+          id: currentDocumentId,
+          name: metadataEntry?.name ?? path.basename(mdPath),
+          sourcePath: metadataEntry?.sourcePath ?? mdPath,
+          sourceDir,
+          mdPath,
+        },
+        content,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/workspaces/:workspaceId/copy", async (req, res, next) => {
+    try {
+      const workspaceId = req.params.workspaceId;
+      const workspaceDir = path.join(runtimeConfig.workspaceRoot, workspaceId);
+      const state = await readBookWorkspaceState(workspaceDir);
+      if (!state) {
+        res.status(404).json({ error: "Workspace not found." });
+        return;
+      }
+      const body = req.body as { targetRoot?: unknown };
+      if (typeof body.targetRoot !== "string" || !body.targetRoot.trim()) {
+        res.status(400).json({ error: "targetRoot is required." });
+        return;
+      }
+      const targetRoot = path.resolve(body.targetRoot.trim());
+      await fs.mkdir(targetRoot, { recursive: true });
+      let targetWorkspaceId = workspaceId;
+      let targetWorkspaceDir = path.join(targetRoot, targetWorkspaceId);
+      let counter = 1;
+      while (await fs.stat(targetWorkspaceDir).then(() => true).catch(() => false)) {
+        counter += 1;
+        targetWorkspaceId = `${workspaceId}-copy-${counter}`;
+        targetWorkspaceDir = path.join(targetRoot, targetWorkspaceId);
+      }
+      await fs.cp(workspaceDir, targetWorkspaceDir, { recursive: true });
+      res.status(201).json({
+        id: targetWorkspaceId,
+        name: targetWorkspaceId,
+        path: targetWorkspaceDir,
       });
     } catch (error) {
       next(error);
@@ -238,10 +566,39 @@ export function createApp({ backend, backendName, workspaceRoot = process.cwd() 
     }
   });
 
-  app.post("/api/sessions", async (_req, res, next) => {
+  app.post("/api/sessions", async (req, res, next) => {
     try {
+      const body = (req.body ?? {}) as { cwd?: unknown; bookAgentConfigPath?: unknown };
+      const config = await readBookAgentConfig(runtimeConfig.workspaceRoot);
+      const defaultBookAgentConfigPath = path.join(runtimeConfig.workspaceRoot, BOOK_AGENT_CONFIG_NAME);
+      const requestedBookAgentConfigPath =
+        typeof body.bookAgentConfigPath === "string" && body.bookAgentConfigPath.trim()
+          ? path.resolve(body.bookAgentConfigPath)
+          : defaultBookAgentConfigPath;
+      const requestedCwd =
+        typeof body.cwd === "string" && body.cwd.trim()
+          ? path.resolve(body.cwd)
+          : config.current_workspace
+            ? path.join(runtimeConfig.workspaceRoot, config.current_workspace)
+            : runtimeConfig.workspaceRoot;
+      const requestedCwdStat = await fs.stat(requestedCwd).catch(() => null);
+      const agentCwd = requestedCwdStat?.isDirectory() ? requestedCwd : runtimeConfig.workspaceRoot;
+      const policyPrompt = await buildRepoPolicyPrompt(policySourceRoot);
+      const runtimeContextPrompt = [
+        "Runtime context:",
+        `- workspace_root: ${runtimeConfig.workspaceRoot}`,
+        `- current_workspace: ${config.current_workspace ?? "(none)"}`,
+        `- book_agent_config: ${requestedBookAgentConfigPath}`,
+        `- cwd: ${agentCwd}`,
+      ].join("\n");
+      const systemPrompt = [policyPrompt, runtimeContextPrompt].filter(Boolean).join("\n\n");
+
       console.log(`[session] creating session using backend=${backendName}`);
-      const result = await backend.createSession();
+      const result = await backend.createSession({
+        cwd: agentCwd,
+        bookAgentConfigPath: requestedBookAgentConfigPath,
+        systemPrompt,
+      });
       console.log(`[session] created session id=${result.sessionId}`);
       res.status(201).json(result);
     } catch (error) {
@@ -417,6 +774,265 @@ function isMarkdownFile(filePath: string): boolean {
 
 function isPdfFile(filePath: string): boolean {
   return filePath.endsWith(".pdf");
+}
+
+function slugify(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+async function ensureBookAgentConfig(root: string): Promise<void> {
+  const configPath = path.join(root, BOOK_AGENT_CONFIG_NAME);
+  const exists = await fs.stat(configPath).catch(() => null);
+  if (exists) {
+    return;
+  }
+  const initial: BookAgentConfig = {
+    documents: {},
+    output_root: ".",
+    current_workspace: null,
+  };
+  await fs.writeFile(configPath, `${JSON.stringify(initial, null, 2)}\n`, "utf8");
+}
+
+async function readBookAgentConfig(root: string): Promise<BookAgentConfig> {
+  await ensureBookAgentConfig(root);
+  const configPath = path.join(root, BOOK_AGENT_CONFIG_NAME);
+  const raw = await fs.readFile(configPath, "utf8");
+  const parsed = JSON.parse(raw) as Partial<BookAgentConfig>;
+  return {
+    documents: typeof parsed.documents === "object" && parsed.documents !== null ? parsed.documents as Record<string, string> : {},
+    output_root: typeof parsed.output_root === "string" && parsed.output_root.trim() ? parsed.output_root : ".",
+    current_workspace: typeof parsed.current_workspace === "string" ? parsed.current_workspace : null,
+  };
+}
+
+async function writeBookAgentConfig(root: string, config: BookAgentConfig): Promise<void> {
+  const configPath = path.join(root, BOOK_AGENT_CONFIG_NAME);
+  await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+}
+
+async function readBookWorkspaceState(workspaceDir: string): Promise<BookWorkspaceState | null> {
+  const statePath = path.join(workspaceDir, BOOK_WORKSPACE_STATE_NAME);
+  const raw = await fs.readFile(statePath, "utf8").catch(() => "");
+  if (!raw) {
+    return null;
+  }
+  const parsed = JSON.parse(raw) as Partial<BookWorkspaceState>;
+  return {
+    documents: Array.isArray(parsed.documents) ? parsed.documents.filter((x): x is string => typeof x === "string") : [],
+    current_document: typeof parsed.current_document === "string" ? parsed.current_document : null,
+    output_subdirs: typeof parsed.output_subdirs === "object" && parsed.output_subdirs !== null
+      ? parsed.output_subdirs as Record<string, string>
+      : {},
+  };
+}
+
+async function writeBookWorkspaceState(workspaceDir: string, state: BookWorkspaceState): Promise<void> {
+  const statePath = path.join(workspaceDir, BOOK_WORKSPACE_STATE_NAME);
+  await fs.writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+}
+
+async function readProjectMetadata(workspaceDir: string): Promise<ProjectMetadata | null> {
+  const metadataPath = path.join(workspaceDir, PROJECT_METADATA_NAME);
+  const raw = await fs.readFile(metadataPath, "utf8").catch(() => "");
+  if (!raw) {
+    return null;
+  }
+  const parsed = JSON.parse(raw) as Partial<ProjectMetadata>;
+  return {
+    project_id: typeof parsed.project_id === "string" ? parsed.project_id : path.basename(workspaceDir),
+    project_name: typeof parsed.project_name === "string" ? parsed.project_name : path.basename(workspaceDir),
+    created_at: typeof parsed.created_at === "string" ? parsed.created_at : new Date().toISOString(),
+    documents: Array.isArray(parsed.documents)
+      ? parsed.documents.filter((entry): entry is ProjectDocumentState =>
+          typeof entry === "object" && entry !== null && typeof (entry as { id?: unknown }).id === "string")
+      : [],
+  };
+}
+
+async function writeProjectMetadata(workspaceDir: string, metadata: ProjectMetadata): Promise<void> {
+  const metadataPath = path.join(workspaceDir, PROJECT_METADATA_NAME);
+  await fs.writeFile(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, "utf8");
+}
+
+async function listCanonicalWorkspaces(root: string, config: BookAgentConfig) {
+  const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => []);
+  const rows: Array<{
+    id: string;
+    name: string;
+    path: string;
+    outputRoot: string;
+    documentCount: number;
+    currentDocumentId: string | null;
+  }> = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith(".")) {
+      continue;
+    }
+    const workspaceId = entry.name;
+    const payload = await buildCanonicalWorkspaceResponse(root, workspaceId, config);
+    if (!payload) {
+      continue;
+    }
+    rows.push({
+      id: payload.id,
+      name: payload.name,
+      path: payload.path,
+      outputRoot: payload.outputRoot,
+      documentCount: payload.documents.length,
+      currentDocumentId: payload.currentDocumentId,
+    });
+  }
+
+  rows.sort((a, b) => a.name.localeCompare(b.name));
+  return rows;
+}
+
+async function buildCanonicalWorkspaceResponse(root: string, workspaceId: string, config: BookAgentConfig) {
+  const workspaceDir = path.join(root, workspaceId);
+  const workspaceState = await readBookWorkspaceState(workspaceDir);
+  if (!workspaceState) {
+    return null;
+  }
+  const metadata = await readProjectMetadata(workspaceDir);
+  const docs: Array<{
+    id: string;
+    name: string;
+    sourcePath: string;
+    sourceDir: string;
+    mdPath: string;
+  }> = [];
+
+  for (const docId of workspaceState.documents) {
+    const sourceDir = config.documents[docId] ?? "";
+    const metadataDoc = metadata?.documents.find((doc) => doc.id === docId) ?? null;
+    let mdPath = metadataDoc?.mdPath ?? "";
+    if (!mdPath && sourceDir) {
+      mdPath = await resolvePrimaryMarkdownPath(sourceDir).catch(() => "");
+    }
+    docs.push({
+      id: docId,
+      name: metadataDoc?.name ?? docId,
+      sourcePath: metadataDoc?.sourcePath ?? mdPath,
+      sourceDir,
+      mdPath,
+    });
+  }
+
+  const currentDocument = docs.find((doc) => doc.id === workspaceState.current_document) ?? null;
+  return {
+    id: workspaceId,
+    name: metadata?.project_name ?? workspaceId,
+    path: workspaceDir,
+    outputRoot: path.join(workspaceDir, "artifacts"),
+    documents: docs,
+    currentDocumentId: workspaceState.current_document,
+    currentDocument,
+    createdAt: metadata?.created_at ?? null,
+  };
+}
+
+async function resolvePrimaryMarkdownPath(sourceDir: string): Promise<string> {
+  const stat = await fs.stat(sourceDir).catch(() => null);
+  if (!stat) {
+    throw new Error(`Missing source path: ${sourceDir}`);
+  }
+  if (stat.isFile() && isMarkdownFile(sourceDir)) {
+    return sourceDir;
+  }
+  if (!stat.isDirectory()) {
+    throw new Error(`Source path is not a markdown file/folder: ${sourceDir}`);
+  }
+  const entries = await fs.readdir(sourceDir, { withFileTypes: true });
+  const markdownEntry = entries
+    .filter((entry) => entry.isFile() && isMarkdownFile(entry.name))
+    .sort((a, b) => a.name.localeCompare(b.name))[0];
+  if (!markdownEntry) {
+    throw new Error(`No markdown file found in ${sourceDir}`);
+  }
+  return path.join(sourceDir, markdownEntry.name);
+}
+
+async function nextAvailableDocumentId(baseId: string, root: string): Promise<string> {
+  const config = await readBookAgentConfig(root);
+  if (!config.documents[baseId]) {
+    return baseId;
+  }
+  let counter = 2;
+  while (config.documents[`${baseId}-${counter}`]) {
+    counter += 1;
+  }
+  return `${baseId}-${counter}`;
+}
+
+async function buildRepoPolicyPrompt(policyRoot: string): Promise<string> {
+  const rulePath = path.join(policyRoot, ".cursor", "rules", "book-agent.mdc");
+  const ruleText = await fs.readFile(rulePath, "utf8").catch(() => "");
+
+  const skillsRoot = path.join(policyRoot, ".cursor", "skills");
+  const skillFiles = await collectSkillMarkdownFiles(skillsRoot);
+  const skillSections: string[] = [];
+  for (const skillFile of skillFiles) {
+    const content = await fs.readFile(skillFile, "utf8").catch(() => "");
+    if (!content.trim()) {
+      continue;
+    }
+    const relative = path.relative(policyRoot, skillFile) || skillFile;
+    skillSections.push(`### Skill (${relative})\n${content.trim()}`);
+  }
+
+  const parts: string[] = [];
+  if (ruleText.trim()) {
+    parts.push(`### Rule (.cursor/rules/book-agent.mdc)\n${ruleText.trim()}`);
+  }
+  if (skillSections.length > 0) {
+    parts.push(skillSections.join("\n\n"));
+  }
+
+  if (parts.length === 0) {
+    return "";
+  }
+
+  return [
+    "Follow the repository policy context below when deciding how to use tools and where to write artifacts.",
+    "The policy source of truth is loaded from this repository (.cursor/rules and .cursor/skills).",
+    ...parts,
+  ].join("\n\n");
+}
+
+async function collectSkillMarkdownFiles(skillsRoot: string): Promise<string[]> {
+  const rootStat = await fs.stat(skillsRoot).catch(() => null);
+  if (!rootStat?.isDirectory()) {
+    return [];
+  }
+  const files: string[] = [];
+  const stack = [skillsRoot];
+
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) {
+      continue;
+    }
+    const entries = await fs.readdir(current, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      const absolute = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(absolute);
+        continue;
+      }
+      if (entry.isFile() && entry.name.toLowerCase() === "skill.md") {
+        files.push(absolute);
+      }
+    }
+  }
+
+  files.sort((a, b) => a.localeCompare(b));
+  return files;
 }
 
 function getErrorMessage(error: unknown): string {

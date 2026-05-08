@@ -81,6 +81,31 @@ Generated files (notebooks, notes, **`requirements*.txt`** for that session, etc
 
 ---
 
+## Web app workflow (current)
+
+For `apps/web` the current setup flow is:
+
+1. Set a **workspace root** in the web UI.
+2. Create or open a workspace under that root.
+3. Add document(s), set current document, then chat/render.
+
+Current file conventions in this flow:
+
+- Root config: **`<root>/.book_agent.json`**
+- Workspace state: **`<root>/<workspace_id>/.book_workspace.json`**
+- Web metadata helper: **`<root>/<workspace_id>/project.json`**
+
+Session creation in web now passes dynamic runtime context (`cwd` + `BOOK_AGENT_CONFIG`) from selected workspace/root, rather than relying only on server startup cwd.
+
+Web session creation also loads policy context from the repository itself:
+
+- Rule: **`.cursor/rules/book-agent.mdc`**
+- Skills: **`.cursor/skills/**/SKILL.md`**
+
+Optional override for policy lookup root: set **`BOOK_AGENT_POLICY_ROOT`** before starting `apps/web`; otherwise it uses `WORKSPACE_ROOT`.
+
+---
+
 ## Example conversations
 
 These are **what you might type**; the agent should call MCP tools (**`get_config`** first when setting up or writing) rather than only guessing paths. Replace **`inputs/mybook`** and ids with your real folder and names.

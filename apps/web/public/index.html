@@ -11,17 +11,17 @@
     <main class="workspace" id="workspace">
       <section class="pane left-pane">
         <header class="header">
-          <h1>Book Workspace</h1>
+          <h1>Document Viewer</h1>
           <div class="controls-row mode-switch-row">
             <button id="markdownViewButton" type="button">Markdown view</button>
             <button id="pdfViewButton" type="button">PDF view</button>
-            <span class="subtle" id="fileStatus">Loading file list...</span>
+            <span class="subtle" id="fileStatus">Choose a workspace and current document.</span>
           </div>
         </header>
 
         <section class="panel viewer" id="viewerPanel" aria-live="polite">
           <div id="viewerPlaceholder" class="subtle">
-            Pick a file from the config dashboard to start reading.
+            Create/select a workspace, add documents, and set a current document.
           </div>
           <article id="markdownViewer" class="markdown-viewer hidden"></article>
           <iframe id="pdfViewer" class="pdf-viewer hidden" title="PDF viewer"></iframe>
@@ -60,23 +60,54 @@
           <button id="closeConfigButton" type="button">Close</button>
         </div>
 
-        <label class="subtle">
-          Markdown file
-          <div class="path-row">
-            <input id="fileInput" type="text" placeholder="Click 'Pick file' to choose an .md file" readonly />
-            <button id="pickFileButton" type="button">Pick file</button>
-          </div>
-        </label>
+        <section class="panel setup-section">
+          <h3>1) Workspace Root</h3>
+          <label class="subtle">
+            Root folder for all workspaces
+            <div class="path-row">
+              <input id="workspaceRootInput" type="text" placeholder="Pick or type workspace root folder" />
+              <button id="pickWorkspaceRootButton" type="button">Pick</button>
+              <button id="saveWorkspaceRootButton" type="button">Apply</button>
+            </div>
+          </label>
+        </section>
 
-        <label class="subtle">
-          Output folder
-          <div class="path-row">
-            <input id="outputFolderInput" type="text" placeholder="Auto-set after picking MD file" readonly />
-            <button id="pickOutputButton" type="button" disabled>Pick folder</button>
+        <section class="panel setup-section">
+          <h3>2) Workspaces</h3>
+          <div class="controls-row">
+            <input id="newWorkspaceNameInput" type="text" placeholder="New workspace name (e.g. rl-study)" />
+            <button id="createWorkspaceButton" type="button">Create workspace</button>
           </div>
-        </label>
+          <label class="subtle">
+            Existing workspace
+            <select id="workspaceSelect"></select>
+          </label>
+          <div class="controls-row">
+            <button id="openWorkspaceButton" type="button">Open workspace</button>
+            <button id="copyWorkspaceButton" type="button" disabled>Copy workspace...</button>
+          </div>
+          <p class="subtle compact" id="workspaceMeta"></p>
+        </section>
 
-        <span class="subtle">Use the picker above to load a markdown file.</span>
+        <section class="panel setup-section">
+          <h3>3) Documents</h3>
+          <div class="controls-row">
+            <button id="addDocumentButton" type="button" disabled>Add document</button>
+          </div>
+          <label class="subtle">
+            Workspace documents
+            <select id="documentSelect"></select>
+          </label>
+          <div class="controls-row">
+            <button id="setCurrentDocumentButton" type="button" disabled>Set current + render</button>
+          </div>
+          <label class="subtle">
+            Workspace output folder
+            <input id="workspaceOutputInput" type="text" readonly />
+          </label>
+        </section>
+
+        <span class="subtle" id="setupStatus">Workspace-first flow: root -> workspace -> documents -> current document.</span>
       </div>
     </section>
 

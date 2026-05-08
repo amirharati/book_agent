@@ -16,6 +16,12 @@ export interface CreateSessionResult {
   sessionId: string;
 }
 
+export interface CreateSessionRequest {
+  cwd?: string;
+  bookAgentConfigPath?: string;
+  systemPrompt?: string;
+}
+
 export interface SendMessageRequest {
   sessionId: string;
   message: string;
@@ -23,7 +29,7 @@ export interface SendMessageRequest {
 }
 
 export interface AgentBackend {
-  createSession(): Promise<CreateSessionResult>;
+  createSession(request?: CreateSessionRequest): Promise<CreateSessionResult>;
   sendMessage(request: SendMessageRequest): AsyncIterable<AgentStreamEvent>;
 }
 

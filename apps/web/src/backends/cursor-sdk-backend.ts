@@ -1,5 +1,6 @@
 import {
   AgentBackend,
+  CreateSessionRequest,
   AgentStreamEvent,
   CreateSessionResult,
   SendMessageRequest,
@@ -15,29 +16,35 @@ interface CursorSdkBackendOptions {
 }
 
 export class CursorSdkBackend implements AgentBackend {
-  private readonly sessions = new Map<string, SDKAgent>();
+  private readonly sessions = new Map<
+    string,
+    { agent: SDKAgent; cwd: string; bookAgentConfigPath: string; systemPrompt: string }
+  >();
 
   constructor(private readonly options: CursorSdkBackendOptions) {}
 
-  async createSession(): Promise<CreateSessionResult> {
-    const agent = await this.createCursorAgent();
+  async createSession(request?: CreateSessionRequest): Promise<CreateSessionResult> {
+    const cwd = request?.cwd ?? this.options.cwd;
+    const bookAgentConfigPath = request?.bookAgentConfigPath ?? this.options.bookAgentConfigPath;
+    const systemPrompt = request?.systemPrompt?.trim() ?? "";
+    const agent = await this.createCursorAgent({ cwd, bookAgentConfigPath });
     const sessionId = newSessionId();
-    this.sessions.set(sessionId, agent);
+    this.sessions.set(sessionId, { agent, cwd, bookAgentConfigPath, systemPrompt });
     return { sessionId };
   }
 
   async *sendMessage(request: SendMessageRequest): AsyncIterable<AgentStreamEvent> {
-    const agent = this.sessions.get(request.sessionId);
-    if (!agent) {
+    const session = this.sessions.get(request.sessionId);
+    if (!session) {
       yield { type: "error", message: `Unknown session: ${request.sessionId}` };
       return;
     }
 
-    const fullPrompt = this.buildPrompt(request);
+    const fullPrompt = this.buildPrompt(request, session.systemPrompt);
     const sendOptions: SendOptions = {
-      mcpServers: this.getMcpServerConfig(),
+      mcpServers: this.getMcpServerConfig(session.cwd, session.bookAgentConfigPath),
     };
-    const run = await agent.send(fullPrompt, sendOptions);
+    const run = await session.agent.send(fullPrompt, sendOptions);
 
     for await (const message of run.stream()) {
       const delta = this.extractDelta(message);
@@ -48,9 +55,9 @@ export class CursorSdkBackend implements AgentBackend {
     yield { type: "done" };
   }
 
-  private async createCursorAgent(): Promise<SDKAgent> {
+  private async createCursorAgent(sessionOptions: { cwd: string; bookAgentConfigPath: string }): Promise<SDKAgent> {
     const apiKey = this.options.cursorApiKey ?? process.env.CURSOR_API_KEY;
-    const modelId = this.options.cursorModelId ?? process.env.CURSOR_MODEL_ID ?? "auto";
+    const modelId = this.options.cursorModelId ?? process.env.CURSOR_MODEL_ID ?? "default";
     if (!apiKey) {
       throw new Error("CURSOR_API_KEY is required for CursorSdkBackend.");
     }
@@ -75,8 +82,8 @@ export class CursorSdkBackend implements AgentBackend {
       return await sdkModule.Agent.create({
         apiKey,
         model: { id: modelId },
-        local: { cwd: this.options.cwd },
-        mcpServers: this.getMcpServerConfig(),
+        local: { cwd: sessionOptions.cwd },
+        mcpServers: this.getMcpServerConfig(sessionOptions.cwd, sessionOptions.bookAgentConfigPath),
       });
     } catch (error) {
       throw new Error(
@@ -86,29 +93,30 @@ export class CursorSdkBackend implements AgentBackend {
     }
   }
 
-  private getMcpServerConfig(): Record<string, McpServerConfig> {
+  private getMcpServerConfig(cwd: string, bookAgentConfigPath: string): Record<string, McpServerConfig> {
     return {
       "book-agent": {
         command: "python",
         args: ["-m", "book_agent.mcp_server"],
-        cwd: this.options.cwd,
+        cwd,
         env: {
-          BOOK_AGENT_CONFIG: this.options.bookAgentConfigPath,
+          BOOK_AGENT_CONFIG: bookAgentConfigPath,
         },
       },
     };
   }
 
-  private buildPrompt(request: SendMessageRequest): string {
+  private buildPrompt(request: SendMessageRequest, systemPrompt: string): string {
+    const prefix = systemPrompt ? `SYSTEM: ${systemPrompt}\n\n` : "";
     const history = request.history ?? [];
     if (history.length === 0) {
-      return request.message;
+      return `${prefix}${request.message}`;
     }
 
     const historyLines = history.map((message) => `${message.role.toUpperCase()}: ${message.content}`);
     historyLines.push(`USER: ${request.message}`);
     historyLines.push("ASSISTANT:");
-    return historyLines.join("\n");
+    return `${prefix}${historyLines.join("\n")}`;
   }
 
   private extractDelta(message: SDKMessage): string {

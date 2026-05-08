@@ -1,5 +1,6 @@
 import {
   AgentBackend,
+  CreateSessionRequest,
   AgentStreamEvent,
   CreateSessionResult,
   SendMessageRequest,
@@ -9,7 +10,7 @@ import {
 export class EchoBackend implements AgentBackend {
   private readonly sessions = new Set<string>();
 
-  async createSession(): Promise<CreateSessionResult> {
+  async createSession(_request?: CreateSessionRequest): Promise<CreateSessionResult> {
     const sessionId = newSessionId();
     this.sessions.add(sessionId);
     return { sessionId };

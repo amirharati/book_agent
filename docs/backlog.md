@@ -15,13 +15,20 @@ Suggested order—see **[PRD_WEB_APP_CURSOR_SDK.md](PRD_WEB_APP_CURSOR_SDK.md)**
 
 Session note: Cursor-backed create-session + stream tested successfully with `CURSOR_API_KEY` and a valid `CURSOR_MODEL_ID` (e.g. `default`).
 
-**v0 UI progress (apps/web)** — usable first slice, not final product workflow:
+**v0 UI progress (apps/web)** — usable first slice, still evolving:
 
-- Two-pane workspace (resize), chat via REST + SSE, config strip for setup.
-- Pick **Markdown path** via server-backed folder/modal UI; optional **output** folder (`<md-dir>/outputs` default), create subfolder (`POST /api/fs/mkdir`).
+- Two-pane workspace (resize), chat via REST + SSE, setup dashboard.
+- **Workspace-first flow**: set root -> create/select workspace -> add docs -> set current doc -> render.
+- Canonical config/state wiring in web flow:
+  - root config: **`<root>/.book_agent.json`**
+  - per-workspace state: **`<root>/<workspace_id>/.book_workspace.json`**
+  - web metadata: **`<root>/<workspace_id>/project.json`** (UI-only helper).
+- Workspace layout in web flow now follows **`ROOT/<workspace_id>/...`** (not `ROOT/outputs/<workspace_id>/...`).
 - Reader: Markdown rendered in-browser (**marked**, **KaTeX** via marked-katex, **DOMPurify**); relative `![](…)` rewired through **`GET /api/fs/file`** so figures next to the `.md` load.
-- **[Temporary workflow]** Loading an arbitrary `.md` from disk and rendering it standalone is **intentionally short-term**. Expect a **later redesign**: registered book / workspace in **book-agent** config, **`index.json`**, section-synced reader, TOC, figure resolution via MCP, and tighter alignment with **`AGENT_WRITE_ROOT`** / outputs model—not “open any file.”
-- **Deferred:** Chat/agent is **not** yet reliably grounded in “the open book” (system prompt + **book-agent MCP** `get_config` / **`read`** / TOC—model may answer generically). **Fix in a dedicated pass.**
+- Backend loads `.env` automatically on startup and defaults Cursor model to **`default`** (not `auto`).
+- Session context now refreshes on workspace/doc selection and passes dynamic `cwd` + `BOOK_AGENT_CONFIG` path into SDK session creation.
+- Web sessions now load repo policy context from **`.cursor/rules/book-agent.mdc`** and **`.cursor/skills/**/SKILL.md`** and inject it as system guidance when creating SDK sessions.
+- **Deferred:** Chat/agent book-grounding quality still needs dedicated work (tool-first prompting, section-aware context, stricter checks for generic responses).
 
 ---
 
@@ -29,7 +36,7 @@ Session note: Cursor-backed create-session + stream tested successfully with `CU
 
 **Ordering:** Finish **agent/workspace coherence** before polishing persistence or richer UX. Details below are **TBD until specced**; no implementation commitment in this edit.
 
-### 1. Agent + workspace coherence (**immediate next**)
+### 1. Agent + workspace coherence (**partially done; continue hardening**)
 
 **Goal:** The AI reliably has **operational workspace context**: **`cwd`** (repo or book folder—TBD), **current document / book root**, **output root** wired to **`_resolved_output_dir`** when using **book-agent**, and MCP tools (`get_config`, `read`, `toc`, …) usable without the user guessing paths.
 
@@ -39,7 +46,9 @@ Session note: Cursor-backed create-session + stream tested successfully with `CU
 - Whether the server **bootstrap or updates** `.book_agent.json`, or assumes an existing registry.
 - **`WORKSPACE_ROOT`** for **Cursor SDK** vs **book-agent workspace id** naming—one story, not two divergent notions of “workspace.”
 
-**Done when:** Open book → ask a concrete question answerable via **`read`**/TOC → agent uses tools and respects **artifact output** rules where applicable.
+**Done so far:** Workspace/doc selection now updates canonical configs and session `cwd`/config path; web session creation also injects repo rule/skill context from `.cursor`.
+
+**Remaining to close phase:** Open book → ask a concrete question answerable via **`read`**/TOC → agent consistently uses tools and respects **artifact output** rules without user path hints.
 
 ### 2. Light persistence (**after Phase 1 works**)
 
@@ -61,6 +70,8 @@ Keep **easy path first**: Phase **1**, then **2**, then decide how much of **3**
 ## Reliability & policy
 
 - **Rule adherence:** LLM agents can still write outside **`_resolved_output_dir`** despite **`book-agent.mdc`**. Later: validation hooks, CI on repo layout, or in-app path checks (web PRD phase).
+- **Context visibility (real issue observed):** Process cwd vs SDK session cwd can be misunderstood in chat/debugging. Add explicit “runtime context” display in UI/API logs (`session cwd`, `book config path`, selected workspace/doc) to avoid false assumptions.
+- **Legacy prototype artifacts:** `outputs/web-workspaces/**` and `workspace.json` are from older web prototype flow. Keep compatibility if needed, but migrate/clean to avoid confusion with canonical workspace files.
 - **Global installs:** After clone or new machine: **`~/.cursor/mcp.json`**, **`~/.cursor/rules/`**, optional **`~/.cursor/skills/`** symlink to this repo’s rule/skill copies—see **[USAGE.md](USAGE.md)**.
 
 ---

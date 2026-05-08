@@ -343,6 +343,23 @@ button:disabled {
   min-width: 220px;
 }
 
+.setup-section {
+  padding: 12px;
+  gap: 10px;
+  display: flex;
+  flex-direction: column;
+}
+
+.setup-section h3 {
+  margin: 0;
+  font-size: 0.98rem;
+  color: #cbd5e1;
+}
+
+.compact {
+  margin: 0;
+}
+
 .path-row {
   display: flex;
   gap: 8px;
@@ -351,6 +368,7 @@ button:disabled {
 
 .path-row input {
   flex: 1;
+  min-width: 220px;
 }
 
 .path-row button {
@@ -377,6 +395,15 @@ button:disabled {
 
 .file-item:hover {
   background: #334155 !important;
+}
+
+#workspaceSelect,
+#documentSelect {
+  width: 100%;
+}
+
+#setupStatus {
+  padding-bottom: 4px;
 }
 
 .modal-backdrop {
