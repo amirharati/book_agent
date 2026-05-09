@@ -1,9 +1,26 @@
 import express from "express";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { inspect } from "node:util";
 import { AgentBackend, AgentStreamEvent } from "./agent-backend.js";
+import {
+  appendConversationMessages,
+  applyMessagesToConversationSummary,
+  createConversationSummary,
+  defaultWorkspaceSessionState,
+  ensureConversationFile,
+  readConversationMessages,
+  readGlobalState,
+  readRootState,
+  readWorkspaceSessionState,
+  writeGlobalState,
+  writeJsonAtomic,
+  writeRootState,
+  writeWorkspaceSessionState,
+} from "./persistence.js";
+import type { ConversationMessage, WorkspaceSessionState } from "./persistence.js";
 
 interface CreateAppInput {
   backend: AgentBackend;
@@ -106,6 +123,127 @@ export function createApp({ backend, backendName, workspaceRoot = process.cwd() 
     });
   });
 
+  app.get("/api/state/bootstrap", async (_req, res, next) => {
+    try {
+      const [globalState, rootState, config] = await Promise.all([
+        readGlobalState(),
+        readRootState(runtimeConfig.workspaceRoot),
+        readBookAgentConfig(runtimeConfig.workspaceRoot),
+      ]);
+      const preferredWorkspaceId = config.current_workspace ?? rootState.lastWorkspaceId;
+      const workspacePayload = preferredWorkspaceId
+        ? await buildCanonicalWorkspaceResponse(runtimeConfig.workspaceRoot, preferredWorkspaceId, config)
+        : null;
+      const workspaceId = workspacePayload?.id ?? null;
+      const workspaceSession = workspacePayload
+        ? await readWorkspaceSessionState(workspacePayload.path)
+        : defaultWorkspaceSessionState();
+      const activeConversation = workspacePayload && workspaceSession.chat.activeConversationId
+        ? {
+            conversation: workspaceSession.chat.conversations.find(
+              (entry) => entry.id === workspaceSession.chat.activeConversationId,
+            ) ?? null,
+            messages: await readConversationMessages(
+              workspacePayload.path,
+              workspaceSession.chat.activeConversationId,
+            ),
+          }
+        : null;
+      const merged = {
+        ui: {
+          ...globalState.ui,
+          ...(rootState.rootUiOverrides.ui && typeof rootState.rootUiOverrides.ui === "object"
+            ? rootState.rootUiOverrides.ui as Record<string, unknown>
+            : {}),
+        },
+        chat: {
+          defaultModel: globalState.chat.defaultModel ?? "default",
+        },
+        workspaceId,
+      };
+      res.json({
+        workspaceRoot: runtimeConfig.workspaceRoot,
+        files: {
+          globalPath: path.join(os.homedir(), ".book-agent", "global.json"),
+          rootPath: path.join(runtimeConfig.workspaceRoot, ".book_agent_web.json"),
+          workspacePath: workspacePayload ? path.join(workspacePayload.path, "project.session.json") : null,
+        },
+        global: globalState,
+        root: rootState,
+        workspaceSession,
+        activeConversation,
+        merged,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch("/api/state/global", async (req, res, next) => {
+    try {
+      const patch = (req.body ?? {}) as {
+        ui?: { theme?: unknown; density?: unknown };
+        chat?: { defaultModel?: unknown };
+        recentRoots?: unknown;
+        lastRoot?: unknown;
+      };
+      const state = await readGlobalState();
+      if (patch.ui && typeof patch.ui === "object") {
+        if (typeof patch.ui.theme === "string" || patch.ui.theme === null) {
+          state.ui.theme = patch.ui.theme ?? undefined;
+        }
+        if (typeof patch.ui.density === "string" || patch.ui.density === null) {
+          state.ui.density = patch.ui.density ?? undefined;
+        }
+      }
+      if (patch.chat && typeof patch.chat === "object") {
+        if (typeof patch.chat.defaultModel === "string" && patch.chat.defaultModel.trim()) {
+          state.chat.defaultModel = patch.chat.defaultModel.trim();
+        }
+      }
+      if (Array.isArray(patch.recentRoots)) {
+        state.recentRoots = patch.recentRoots.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+      }
+      if (typeof patch.lastRoot === "string" || patch.lastRoot === null) {
+        state.lastRoot = typeof patch.lastRoot === "string" && patch.lastRoot.trim() ? patch.lastRoot : null;
+      }
+      await writeGlobalState(state);
+      res.json(state);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch("/api/state/root", async (req, res, next) => {
+    try {
+      const patch = (req.body ?? {}) as {
+        lastWorkspaceId?: unknown;
+        workspaceOrder?: unknown;
+        pinnedWorkspaces?: unknown;
+        rootUiOverrides?: unknown;
+      };
+      const state = await readRootState(runtimeConfig.workspaceRoot);
+      if (typeof patch.lastWorkspaceId === "string" || patch.lastWorkspaceId === null) {
+        state.lastWorkspaceId = typeof patch.lastWorkspaceId === "string" && patch.lastWorkspaceId.trim()
+          ? patch.lastWorkspaceId
+          : null;
+      }
+      if (Array.isArray(patch.workspaceOrder)) {
+        state.workspaceOrder = patch.workspaceOrder.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+      }
+      if (Array.isArray(patch.pinnedWorkspaces)) {
+        state.pinnedWorkspaces = patch.pinnedWorkspaces.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+      }
+      if (patch.rootUiOverrides && typeof patch.rootUiOverrides === "object") {
+        state.rootUiOverrides = patch.rootUiOverrides as Record<string, unknown>;
+      }
+      await writeRootState(runtimeConfig.workspaceRoot, state);
+      res.json(state);
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get("/api/models", async (_req, res, next) => {
     try {
       const result = await backend.listModels();
@@ -156,6 +294,10 @@ export function createApp({ backend, backendName, workspaceRoot = process.cwd() 
       await fs.mkdir(nextRoot, { recursive: true });
       runtimeConfig.workspaceRoot = nextRoot;
       await ensureBookAgentConfig(runtimeConfig.workspaceRoot);
+      const globalState = await readGlobalState();
+      globalState.lastRoot = nextRoot;
+      globalState.recentRoots = [nextRoot, ...globalState.recentRoots.filter((entry) => entry !== nextRoot)].slice(0, 12);
+      await writeGlobalState(globalState);
       res.json({ workspaceRoot: runtimeConfig.workspaceRoot });
     } catch (error) {
       next(error);
@@ -184,6 +326,76 @@ export function createApp({ backend, backendName, workspaceRoot = process.cwd() 
       return;
     }
     res.json({ context });
+  });
+
+  app.post("/api/sessions/:sessionId/title-suggestion", async (req, res, next) => {
+    try {
+      const sessionId = req.params.sessionId;
+      const context = sessionRuntimeContexts.get(sessionId);
+      if (!context) {
+        res.status(404).json({ error: "Session not found." });
+        return;
+      }
+      const body = (req.body ?? {}) as {
+        messages?: Array<{ role?: unknown; content?: unknown }>;
+      };
+      if (!Array.isArray(body.messages) || body.messages.length === 0) {
+        res.status(400).json({ error: "messages must be a non-empty array." });
+        return;
+      }
+      const messages = body.messages
+        .filter((entry) => entry && typeof entry === "object")
+        .map((entry) => ({
+          role: typeof entry.role === "string" ? entry.role : "",
+          content: typeof entry.content === "string" ? entry.content.trim() : "",
+        }))
+        .filter((entry) => entry.content && (entry.role === "user" || entry.role === "assistant" || entry.role === "system"));
+      if (messages.length === 0) {
+        res.status(400).json({ error: "messages payload does not contain valid role/content entries." });
+        return;
+      }
+
+      let suggestedTitle = "";
+      try {
+        const titleSession = await backend.createSession({
+          cwd: context.cwd,
+          bookAgentConfigPath: context.bookAgentConfigPath,
+          modelId: context.modelId,
+          systemPrompt: [
+            "You generate concise conversation titles.",
+            "Output only the title, no quotes, no punctuation suffix, no explanation.",
+            "Title constraints: 3-8 words, clear and specific.",
+          ].join(" "),
+        });
+        const titlePrompt = [
+          "Generate a short title for this chat based on the messages below.",
+          messages.map((entry) => `${entry.role.toUpperCase()}: ${entry.content}`).join("\n"),
+        ].join("\n\n");
+        for await (const event of backend.sendMessage({
+          sessionId: titleSession.sessionId,
+          message: titlePrompt,
+        })) {
+          if (event.type === "chunk") {
+            suggestedTitle += event.delta;
+          } else if (event.type === "error") {
+            throw new Error(event.message);
+          }
+        }
+      } catch (error) {
+        console.warn(`[title] AI title generation failed, using fallback: ${getErrorMessage(error)}`);
+      }
+
+      const fallbackUserMessage = messages.find((entry) => entry.role === "user")?.content ?? "";
+      const normalizedFallback = fallbackUserMessage.replace(/\s+/g, " ").trim();
+      const fallbackTitle = normalizedFallback
+        ? (normalizedFallback.length > 56 ? `${normalizedFallback.slice(0, 55)}…` : normalizedFallback)
+        : "New chat";
+
+      const sanitized = sanitizeGeneratedTitle(suggestedTitle);
+      res.json({ title: sanitized || fallbackTitle });
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.post("/api/workspaces", async (req, res, next) => {
@@ -228,6 +440,10 @@ export function createApp({ backend, backendName, workspaceRoot = process.cwd() 
       config.current_workspace = workspaceId;
       config.output_root = ".";
       await writeBookAgentConfig(runtimeConfig.workspaceRoot, config);
+      const rootState = await readRootState(runtimeConfig.workspaceRoot);
+      rootState.lastWorkspaceId = workspaceId;
+      rootState.workspaceOrder = [workspaceId, ...rootState.workspaceOrder.filter((entry) => entry !== workspaceId)];
+      await writeRootState(runtimeConfig.workspaceRoot, rootState);
       res.status(201).json(await buildCanonicalWorkspaceResponse(runtimeConfig.workspaceRoot, workspaceId, config));
     } catch (error) {
       next(error);
@@ -249,6 +465,269 @@ export function createApp({ backend, backendName, workspaceRoot = process.cwd() 
     }
   });
 
+  app.patch("/api/workspaces/:workspaceId/session-state", async (req, res, next) => {
+    try {
+      const workspaceId = req.params.workspaceId;
+      const config = await readBookAgentConfig(runtimeConfig.workspaceRoot);
+      const workspace = await buildCanonicalWorkspaceResponse(runtimeConfig.workspaceRoot, workspaceId, config);
+      if (!workspace) {
+        res.status(404).json({ error: "Workspace not found." });
+        return;
+      }
+      const patch = (req.body ?? {}) as Partial<WorkspaceSessionState>;
+      const state = await readWorkspaceSessionState(workspace.path);
+      if (typeof patch.activeDocumentId === "string" || patch.activeDocumentId === null) {
+        state.activeDocumentId = patch.activeDocumentId ?? null;
+      }
+      if (Array.isArray(patch.openTabs)) {
+        state.openTabs = patch.openTabs
+          .filter((tab): tab is WorkspaceSessionState["openTabs"][number] => {
+            if (!tab || typeof tab !== "object") {
+              return false;
+            }
+            return typeof tab.id === "string" && typeof tab.name === "string" && typeof tab.path === "string";
+          })
+          .map((tab) => ({
+            id: tab.id,
+            docId: typeof tab.docId === "string" ? tab.docId : null,
+            name: tab.name,
+            path: tab.path,
+            isExternal: Boolean(tab.isExternal),
+          }));
+      }
+      if (typeof patch.activeTabId === "string" || patch.activeTabId === null) {
+        state.activeTabId = patch.activeTabId ?? null;
+      }
+      if (patch.layout && typeof patch.layout === "object") {
+        if (typeof patch.layout.chatPanelWidth === "number" || patch.layout.chatPanelWidth === null) {
+          state.layout.chatPanelWidth = patch.layout.chatPanelWidth ?? null;
+        }
+        if (Array.isArray(patch.layout.expandedDirs)) {
+          state.layout.expandedDirs = patch.layout.expandedDirs.filter((entry): entry is string => typeof entry === "string");
+        }
+        if (typeof patch.layout.hideImages === "boolean") {
+          state.layout.hideImages = patch.layout.hideImages;
+        }
+        if (typeof patch.layout.hideHidden === "boolean") {
+          state.layout.hideHidden = patch.layout.hideHidden;
+        }
+      }
+      if (patch.reader && typeof patch.reader === "object") {
+        if (patch.reader.viewMode === "markdown" || patch.reader.viewMode === "pdf") {
+          state.reader.viewMode = patch.reader.viewMode;
+        }
+      }
+      if (patch.chat && typeof patch.chat === "object" && patch.chat.context && typeof patch.chat.context === "object") {
+        const ctx = patch.chat.context;
+        if (typeof ctx.workspaceId === "string" || ctx.workspaceId === null) {
+          state.chat.context.workspaceId = ctx.workspaceId ?? null;
+        }
+        if (typeof ctx.documentId === "string" || ctx.documentId === null) {
+          state.chat.context.documentId = ctx.documentId ?? null;
+        }
+        if (typeof ctx.modelId === "string" || ctx.modelId === null) {
+          state.chat.context.modelId = ctx.modelId ?? null;
+        }
+        if (typeof ctx.sessionShortId === "string" || ctx.sessionShortId === null) {
+          state.chat.context.sessionShortId = ctx.sessionShortId ?? null;
+        }
+      }
+      await writeWorkspaceSessionState(workspace.path, state);
+      res.json(state);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/workspaces/:workspaceId/conversations", async (req, res, next) => {
+    try {
+      const workspaceId = req.params.workspaceId;
+      const config = await readBookAgentConfig(runtimeConfig.workspaceRoot);
+      const workspace = await buildCanonicalWorkspaceResponse(runtimeConfig.workspaceRoot, workspaceId, config);
+      if (!workspace) {
+        res.status(404).json({ error: "Workspace not found." });
+        return;
+      }
+      const state = await readWorkspaceSessionState(workspace.path);
+      const conversations = state.chat.conversations.map((conversation) => ({
+        id: conversation.id,
+        title: conversation.title,
+        archived: conversation.archived,
+        createdAt: conversation.createdAt,
+        updatedAt: conversation.updatedAt,
+        messageCount: conversation.messageCount,
+        lastMessageAt: conversation.lastMessageAt,
+        lastMessagePreview: conversation.lastMessagePreview,
+      }));
+      res.json({
+        workspaceId,
+        activeConversationId: state.chat.activeConversationId,
+        conversations,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/workspaces/:workspaceId/conversations/:conversationId", async (req, res, next) => {
+    try {
+      const workspaceId = req.params.workspaceId;
+      const conversationId = req.params.conversationId;
+      const config = await readBookAgentConfig(runtimeConfig.workspaceRoot);
+      const workspace = await buildCanonicalWorkspaceResponse(runtimeConfig.workspaceRoot, workspaceId, config);
+      if (!workspace) {
+        res.status(404).json({ error: "Workspace not found." });
+        return;
+      }
+      const state = await readWorkspaceSessionState(workspace.path);
+      const conversation = state.chat.conversations.find((entry) => entry.id === conversationId);
+      if (!conversation) {
+        res.status(404).json({ error: "Conversation not found." });
+        return;
+      }
+      const messages = await readConversationMessages(workspace.path, conversationId);
+      res.json({ conversation, messages, activeConversationId: state.chat.activeConversationId });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/workspaces/:workspaceId/conversations", async (req, res, next) => {
+    try {
+      const workspaceId = req.params.workspaceId;
+      const config = await readBookAgentConfig(runtimeConfig.workspaceRoot);
+      const workspace = await buildCanonicalWorkspaceResponse(runtimeConfig.workspaceRoot, workspaceId, config);
+      if (!workspace) {
+        res.status(404).json({ error: "Workspace not found." });
+        return;
+      }
+      const body = (req.body ?? {}) as { title?: unknown; setActive?: unknown };
+      const state = await readWorkspaceSessionState(workspace.path);
+      const conversation = createConversationSummary(typeof body.title === "string" ? body.title : undefined);
+      await ensureConversationFile(workspace.path, conversation.id);
+      state.chat.conversations.push(conversation);
+      if (body.setActive !== false) {
+        state.chat.activeConversationId = conversation.id;
+      }
+      await writeWorkspaceSessionState(workspace.path, state);
+      res.status(201).json({
+        conversation,
+        activeConversationId: state.chat.activeConversationId,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch("/api/workspaces/:workspaceId/conversations/:conversationId", async (req, res, next) => {
+    try {
+      const workspaceId = req.params.workspaceId;
+      const conversationId = req.params.conversationId;
+      const config = await readBookAgentConfig(runtimeConfig.workspaceRoot);
+      const workspace = await buildCanonicalWorkspaceResponse(runtimeConfig.workspaceRoot, workspaceId, config);
+      if (!workspace) {
+        res.status(404).json({ error: "Workspace not found." });
+        return;
+      }
+      const body = (req.body ?? {}) as { title?: unknown; archived?: unknown; setActive?: unknown };
+      const state = await readWorkspaceSessionState(workspace.path);
+      const idx = state.chat.conversations.findIndex((entry) => entry.id === conversationId);
+      if (idx < 0) {
+        res.status(404).json({ error: "Conversation not found." });
+        return;
+      }
+      const current = state.chat.conversations[idx];
+      const updated = {
+        ...current,
+        title: typeof body.title === "string" && body.title.trim() ? body.title.trim() : current.title,
+        archived: typeof body.archived === "boolean" ? body.archived : current.archived,
+        updatedAt: new Date().toISOString(),
+      };
+      state.chat.conversations[idx] = updated;
+      if (typeof body.setActive === "boolean") {
+        state.chat.activeConversationId = body.setActive ? conversationId : null;
+      }
+      await writeWorkspaceSessionState(workspace.path, state);
+      res.json({
+        conversation: updated,
+        activeConversationId: state.chat.activeConversationId,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/workspaces/:workspaceId/conversations/:conversationId/messages", async (req, res, next) => {
+    try {
+      const workspaceId = req.params.workspaceId;
+      const conversationId = req.params.conversationId;
+      const config = await readBookAgentConfig(runtimeConfig.workspaceRoot);
+      const workspace = await buildCanonicalWorkspaceResponse(runtimeConfig.workspaceRoot, workspaceId, config);
+      if (!workspace) {
+        res.status(404).json({ error: "Workspace not found." });
+        return;
+      }
+      const body = (req.body ?? {}) as {
+        messages?: Array<{ role?: unknown; content?: unknown }>;
+        context?: Partial<{
+          workspaceId: string | null;
+          documentId: string | null;
+          modelId: string | null;
+          sessionShortId: string | null;
+        }>;
+      };
+      if (!Array.isArray(body.messages) || body.messages.length === 0) {
+        res.status(400).json({ error: "messages must be a non-empty array." });
+        return;
+      }
+      const state = await readWorkspaceSessionState(workspace.path);
+      const idx = state.chat.conversations.findIndex((entry) => entry.id === conversationId);
+      if (idx < 0) {
+        res.status(404).json({ error: "Conversation not found." });
+        return;
+      }
+      const incoming: Array<Pick<ConversationMessage, "role" | "content">> = [];
+      for (const message of body.messages) {
+        const role = typeof message.role === "string" ? message.role : "";
+        const content = typeof message.content === "string" ? message.content : "";
+        if (!content.trim()) {
+          continue;
+        }
+        if (role !== "user" && role !== "assistant" && role !== "system") {
+          continue;
+        }
+        incoming.push({ role, content });
+      }
+      const writtenMessages = await appendConversationMessages(workspace.path, conversationId, incoming);
+      let conversation = state.chat.conversations[idx];
+      conversation = applyMessagesToConversationSummary(conversation, writtenMessages);
+      state.chat.conversations[idx] = conversation;
+      state.chat.activeConversationId = conversationId;
+      if (body.context && typeof body.context === "object") {
+        if (typeof body.context.workspaceId === "string" || body.context.workspaceId === null) {
+          state.chat.context.workspaceId = body.context.workspaceId ?? null;
+        }
+        if (typeof body.context.documentId === "string" || body.context.documentId === null) {
+          state.chat.context.documentId = body.context.documentId ?? null;
+        }
+        if (typeof body.context.modelId === "string" || body.context.modelId === null) {
+          state.chat.context.modelId = body.context.modelId ?? null;
+        }
+        if (typeof body.context.sessionShortId === "string" || body.context.sessionShortId === null) {
+          state.chat.context.sessionShortId = body.context.sessionShortId ?? null;
+        }
+      }
+      await writeWorkspaceSessionState(workspace.path, state);
+      res.status(201).json({
+        conversation,
+        appendedCount: writtenMessages.length,
+        activeConversationId: state.chat.activeConversationId,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.post("/api/workspaces/:workspaceId/select", async (req, res, next) => {
     try {
       const workspaceId = req.params.workspaceId;
@@ -265,6 +744,10 @@ export function createApp({ backend, backendName, workspaceRoot = process.cwd() 
       config.current_workspace = workspaceId;
       config.output_root = ".";
       await writeBookAgentConfig(runtimeConfig.workspaceRoot, config);
+      const rootState = await readRootState(runtimeConfig.workspaceRoot);
+      rootState.lastWorkspaceId = workspaceId;
+      rootState.workspaceOrder = [workspaceId, ...rootState.workspaceOrder.filter((entry) => entry !== workspaceId)];
+      await writeRootState(runtimeConfig.workspaceRoot, rootState);
       const refreshed = await buildCanonicalWorkspaceResponse(runtimeConfig.workspaceRoot, workspaceId, config);
       res.json(refreshed);
     } catch (error) {
@@ -755,6 +1238,17 @@ export function createApp({ backend, backendName, workspaceRoot = process.cwd() 
         resolvedOutputDir,
         modelId: result.modelId ?? activeModelId,
       };
+      if (runtimeContext.currentWorkspacePath) {
+        const workspaceSession = await readWorkspaceSessionState(runtimeContext.currentWorkspacePath);
+        workspaceSession.chat.context = {
+          workspaceId: runtimeContext.currentWorkspaceId,
+          documentId: runtimeContext.currentDocumentId,
+          modelId: runtimeContext.modelId,
+          sessionShortId: runtimeContext.sessionShortId,
+        };
+        workspaceSession.activeDocumentId = runtimeContext.currentDocumentId;
+        await writeWorkspaceSessionState(runtimeContext.currentWorkspacePath, workspaceSession);
+      }
       sessionRuntimeContexts.set(result.sessionId, runtimeContext);
       console.log(
         `[session] created id=${result.sessionId} short=${runtimeContext.sessionShortId} workspace=${runtimeContext.currentWorkspaceId ?? "(none)"} doc=${runtimeContext.currentDocumentId ?? "(none)"} cwd=${runtimeContext.cwd} config=${runtimeContext.bookAgentConfigPath}`,
@@ -969,24 +1463,33 @@ async function ensureBookAgentConfig(root: string): Promise<void> {
     output_root: ".",
     current_workspace: null,
   };
-  await fs.writeFile(configPath, `${JSON.stringify(initial, null, 2)}\n`, "utf8");
+  await writeJsonAtomic(configPath, initial);
 }
 
 async function readBookAgentConfig(root: string): Promise<BookAgentConfig> {
   await ensureBookAgentConfig(root);
   const configPath = path.join(root, BOOK_AGENT_CONFIG_NAME);
-  const raw = await fs.readFile(configPath, "utf8");
-  const parsed = JSON.parse(raw) as Partial<BookAgentConfig>;
-  return {
-    documents: typeof parsed.documents === "object" && parsed.documents !== null ? parsed.documents as Record<string, string> : {},
-    output_root: typeof parsed.output_root === "string" && parsed.output_root.trim() ? parsed.output_root : ".",
-    current_workspace: typeof parsed.current_workspace === "string" ? parsed.current_workspace : null,
-  };
+  try {
+    const raw = await fs.readFile(configPath, "utf8");
+    const parsed = JSON.parse(raw) as Partial<BookAgentConfig>;
+    return {
+      documents: typeof parsed.documents === "object" && parsed.documents !== null ? parsed.documents as Record<string, string> : {},
+      output_root: typeof parsed.output_root === "string" && parsed.output_root.trim() ? parsed.output_root : ".",
+      current_workspace: typeof parsed.current_workspace === "string" ? parsed.current_workspace : null,
+    };
+  } catch {
+    console.warn(`[persistence] invalid ${BOOK_AGENT_CONFIG_NAME}; falling back to defaults`);
+    return {
+      documents: {},
+      output_root: ".",
+      current_workspace: null,
+    };
+  }
 }
 
 async function writeBookAgentConfig(root: string, config: BookAgentConfig): Promise<void> {
   const configPath = path.join(root, BOOK_AGENT_CONFIG_NAME);
-  await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  await writeJsonAtomic(configPath, config);
 }
 
 async function readBookWorkspaceState(workspaceDir: string): Promise<BookWorkspaceState | null> {
@@ -995,19 +1498,24 @@ async function readBookWorkspaceState(workspaceDir: string): Promise<BookWorkspa
   if (!raw) {
     return null;
   }
-  const parsed = JSON.parse(raw) as Partial<BookWorkspaceState>;
-  return {
-    documents: Array.isArray(parsed.documents) ? parsed.documents.filter((x): x is string => typeof x === "string") : [],
-    current_document: typeof parsed.current_document === "string" ? parsed.current_document : null,
-    output_subdirs: typeof parsed.output_subdirs === "object" && parsed.output_subdirs !== null
-      ? parsed.output_subdirs as Record<string, string>
-      : {},
-  };
+  try {
+    const parsed = JSON.parse(raw) as Partial<BookWorkspaceState>;
+    return {
+      documents: Array.isArray(parsed.documents) ? parsed.documents.filter((x): x is string => typeof x === "string") : [],
+      current_document: typeof parsed.current_document === "string" ? parsed.current_document : null,
+      output_subdirs: typeof parsed.output_subdirs === "object" && parsed.output_subdirs !== null
+        ? parsed.output_subdirs as Record<string, string>
+        : {},
+    };
+  } catch {
+    console.warn(`[persistence] invalid ${BOOK_WORKSPACE_STATE_NAME} at ${workspaceDir}; skipping workspace`);
+    return null;
+  }
 }
 
 async function writeBookWorkspaceState(workspaceDir: string, state: BookWorkspaceState): Promise<void> {
   const statePath = path.join(workspaceDir, BOOK_WORKSPACE_STATE_NAME);
-  await fs.writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  await writeJsonAtomic(statePath, state);
 }
 
 async function readProjectMetadata(workspaceDir: string): Promise<ProjectMetadata | null> {
@@ -1016,21 +1524,26 @@ async function readProjectMetadata(workspaceDir: string): Promise<ProjectMetadat
   if (!raw) {
     return null;
   }
-  const parsed = JSON.parse(raw) as Partial<ProjectMetadata>;
-  return {
-    project_id: typeof parsed.project_id === "string" ? parsed.project_id : path.basename(workspaceDir),
-    project_name: typeof parsed.project_name === "string" ? parsed.project_name : path.basename(workspaceDir),
-    created_at: typeof parsed.created_at === "string" ? parsed.created_at : new Date().toISOString(),
-    documents: Array.isArray(parsed.documents)
-      ? parsed.documents.filter((entry): entry is ProjectDocumentState =>
-          typeof entry === "object" && entry !== null && typeof (entry as { id?: unknown }).id === "string")
-      : [],
-  };
+  try {
+    const parsed = JSON.parse(raw) as Partial<ProjectMetadata>;
+    return {
+      project_id: typeof parsed.project_id === "string" ? parsed.project_id : path.basename(workspaceDir),
+      project_name: typeof parsed.project_name === "string" ? parsed.project_name : path.basename(workspaceDir),
+      created_at: typeof parsed.created_at === "string" ? parsed.created_at : new Date().toISOString(),
+      documents: Array.isArray(parsed.documents)
+        ? parsed.documents.filter((entry): entry is ProjectDocumentState =>
+            typeof entry === "object" && entry !== null && typeof (entry as { id?: unknown }).id === "string")
+        : [],
+    };
+  } catch {
+    console.warn(`[persistence] invalid ${PROJECT_METADATA_NAME} at ${workspaceDir}; using fallback metadata`);
+    return null;
+  }
 }
 
 async function writeProjectMetadata(workspaceDir: string, metadata: ProjectMetadata): Promise<void> {
   const metadataPath = path.join(workspaceDir, PROJECT_METADATA_NAME);
-  await fs.writeFile(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, "utf8");
+  await writeJsonAtomic(metadataPath, metadata);
 }
 
 async function listCanonicalWorkspaces(root: string, config: BookAgentConfig) {
@@ -1251,6 +1764,19 @@ function getErrorMessage(error: unknown): string {
 
 function describeError(error: unknown): string {
   return inspect(error, { depth: 4, breakLength: 120 });
+}
+
+function sanitizeGeneratedTitle(value: string): string {
+  const cleaned = value
+    .replace(/\r?\n/g, " ")
+    .replace(/^["'`]+|["'`]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) {
+    return "";
+  }
+  const maxLength = 80;
+  return cleaned.length > maxLength ? `${cleaned.slice(0, maxLength - 1)}…` : cleaned;
 }
 
 interface FileTreeNode {

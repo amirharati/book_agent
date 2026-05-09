@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "activeDocumentId": "readme",
+  "openTabs": [
+    {
+      "id": "tab-1778285978051-wjnca8",
+      "docId": "readme",
+      "name": "README.md",
+      "path": "/Users/amir/Dropbox/CodingProjects/book_agent/README.md",
+      "isExternal": false
+    }
+  ],
+  "activeTabId": "tab-1778285978051-wjnca8",
+  "layout": {
+    "chatPanelWidth": null,
+    "expandedDirs": [],
+    "hideImages": true,
+    "hideHidden": true
+  },
+  "reader": {
+    "viewMode": "markdown"
+  },
+  "chat": {
+    "conversations": [
+      {
+        "id": "conv-moxlk2bs-qlnkvj",
+        "title": "New chat",
+        "archived": false,
+        "messages": [],
+        "createdAt": "2026-05-09T00:19:38.056Z",
+        "updatedAt": "2026-05-09T00:19:38.056Z"
+      }
+    ],
+    "activeConversationId": "conv-moxlk2bs-qlnkvj",
+    "context": {
+      "workspaceId": "test-workspace",
+      "documentId": "readme",
+      "modelId": "default",
+      "sessionShortId": "8fe97092"
+    }
+  },
+  "updatedAt": "2026-05-09T00:19:38.431Z"
+}

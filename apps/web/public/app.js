@@ -41,6 +41,11 @@ const sendButton = document.querySelector("#sendButton");
 const sessionStatus = document.querySelector("#sessionStatus");
 const modelSelect = document.querySelector("#modelSelect");
 const newSessionButton = document.querySelector("#newSessionButton");
+const chatListModal = document.querySelector("#chatListModal");
+const closeChatListModalButton = document.querySelector("#closeChatListModalButton");
+const cancelChatListButton = document.querySelector("#cancelChatListButton");
+const newChatFromListButton = document.querySelector("#newChatFromListButton");
+const chatListContainer = document.querySelector("#chatListContainer");
 
 // DOM References - Layout
 const mainContent = document.querySelector(".main-content");
@@ -84,6 +89,10 @@ let modalParentPath = null;
 let modalMode = "pick-workspace-root";
 let selectedModelId = "default";
 let currentSessionContext = null;
+let activeConversationId = null;
+let bootstrapPayload = null;
+let isHydrating = false;
+let conversationSummaries = [];
 
 // Tab state
 let openTabs = [];
@@ -92,6 +101,16 @@ let activeTabId = null;
 // File tree state
 let workspaceFileTree = [];
 const expandedDirs = new Set();
+const saveSessionStateDebounced = debounce(() => {
+  persistWorkspaceSessionState().catch((error) => {
+    console.warn("Failed to persist workspace session:", error);
+  });
+}, 350);
+const saveGlobalStateDebounced = debounce(() => {
+  persistGlobalState().catch((error) => {
+    console.warn("Failed to persist global state:", error);
+  });
+}, 350);
 
 // Utilities
 function basename(filePath) {
@@ -107,6 +126,19 @@ function dirname(filePath) {
 function updateStatus(text, type = "info") {
   setupStatus.textContent = text;
   setupStatus.style.color = type === "error" ? "var(--color-error)" : "var(--color-text-muted)";
+}
+
+function debounce(callback, delayMs) {
+  let timeoutId = null;
+  return (...args) => {
+    if (timeoutId) {
+      window.clearTimeout(timeoutId);
+    }
+    timeoutId = window.setTimeout(() => {
+      timeoutId = null;
+      callback(...args);
+    }, delayMs);
+  };
 }
 
 function updateContextChips() {
@@ -135,6 +167,8 @@ function updateContextChips() {
 function clearChatSessionState(statusText = "Open a workspace to start") {
   sessionId = null;
   currentSessionContext = null;
+  activeConversationId = null;
+  conversationSummaries = [];
   history.length = 0;
   chatMessages.innerHTML = "";
   sessionStatus.textContent = statusText;
@@ -142,6 +176,27 @@ function clearChatSessionState(statusText = "Open a workspace to start") {
   sendButton.disabled = true;
   messageInput.disabled = true;
   newSessionButton.disabled = !currentWorkspace;
+}
+
+function formatChatTimestamp(timestamp) {
+  if (!timestamp) return "No messages yet";
+  const parsed = new Date(timestamp);
+  if (Number.isNaN(parsed.getTime())) return "No messages yet";
+  return parsed.toLocaleString();
+}
+
+function buildAutoConversationTitle(userText) {
+  const normalized = (userText || "").replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "New chat";
+  }
+  const trimmed = normalized.length > 56 ? `${normalized.slice(0, 55)}…` : normalized;
+  return trimmed;
+}
+
+function shouldAutoRenameConversation(title) {
+  const normalized = (title || "").trim().toLowerCase();
+  return normalized === "" || normalized === "new chat" || normalized === "untitled chat";
 }
 
 function renderSessionStatus(modelId, runtimeContext) {
@@ -159,9 +214,14 @@ function renderSessionStatus(modelId, runtimeContext) {
 }
 
 function loadSelectedModel() {
-  const stored = window.localStorage.getItem("chat:modelId");
-  if (stored) {
-    selectedModelId = stored;
+  const persistedDefault = bootstrapPayload?.global?.chat?.defaultModel;
+  if (typeof persistedDefault === "string" && persistedDefault.trim()) {
+    selectedModelId = persistedDefault;
+  } else {
+    const stored = window.localStorage.getItem("chat:modelId");
+    if (stored) {
+      selectedModelId = stored;
+    }
   }
   const hasOption = Array.from(modelSelect.options).some((option) => option.value === selectedModelId);
   modelSelect.value = hasOption ? selectedModelId : "default";
@@ -171,6 +231,7 @@ function loadSelectedModel() {
 function setSelectedModel(modelId) {
   selectedModelId = modelId || "default";
   window.localStorage.setItem("chat:modelId", selectedModelId);
+  saveGlobalStateDebounced();
 }
 
 function formatModelName(modelId) {
@@ -249,6 +310,317 @@ async function fetchDirectories(targetPath, includeFiles = false) {
   return apiRequest(`/api/fs/list?${params.toString()}`);
 }
 
+async function loadBootstrapState() {
+  bootstrapPayload = await apiRequest("/api/state/bootstrap");
+  return bootstrapPayload;
+}
+
+async function persistGlobalState() {
+  const lastRoot = workspaceRootInput.value.trim() || null;
+  const recentRoots = [lastRoot, ...(bootstrapPayload?.global?.recentRoots ?? []).filter((root) => root && root !== lastRoot)].filter(Boolean).slice(0, 12);
+  bootstrapPayload = bootstrapPayload ?? {};
+  bootstrapPayload.global = await apiRequest("/api/state/global", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat: { defaultModel: selectedModelId || "default" },
+      lastRoot,
+      recentRoots,
+    }),
+  });
+}
+
+function getCurrentChatPanelWidth() {
+  const columns = mainContent.style.gridTemplateColumns;
+  const match = columns.match(/(\d+)px$/);
+  if (!match) {
+    return null;
+  }
+  return Number.parseInt(match[1], 10);
+}
+
+async function persistWorkspaceSessionState() {
+  if (!currentWorkspace || isHydrating) {
+    return;
+  }
+  const payload = {
+    activeDocumentId: currentWorkspace.currentDocumentId ?? null,
+    openTabs: openTabs.map((tab) => ({
+      id: tab.id,
+      docId: tab.docId ?? null,
+      name: tab.name,
+      path: tab.path,
+      isExternal: Boolean(tab.isExternal),
+    })),
+    activeTabId,
+    layout: {
+      chatPanelWidth: getCurrentChatPanelWidth(),
+      expandedDirs: Array.from(expandedDirs),
+      hideImages: hideImagesCheckbox?.checked ?? true,
+      hideHidden: hideHiddenCheckbox?.checked ?? true,
+    },
+    reader: {
+      viewMode: markdownViewButton.classList.contains("active") ? "markdown" : "pdf",
+    },
+    chat: {
+      context: {
+        workspaceId: currentWorkspace.id,
+        documentId: currentWorkspace.currentDocumentId ?? null,
+        modelId: selectedModelId || null,
+        sessionShortId: currentSessionContext?.sessionShortId ?? null,
+      },
+    },
+  };
+  await apiRequest(`/api/workspaces/${encodeURIComponent(currentWorkspace.id)}/session-state`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+function renderConversationMessages(messages) {
+  chatMessages.innerHTML = "";
+  history.length = 0;
+  for (const message of messages) {
+    appendMessage(message.role, message.content);
+    history.push({ role: message.role, content: message.content });
+  }
+}
+
+async function createConversationAndActivate(title = "New chat") {
+  if (!currentWorkspace) return null;
+  const normalizedTitle = typeof title === "string" && title.trim() ? title.trim() : "New chat";
+  const payload = await apiRequest(`/api/workspaces/${encodeURIComponent(currentWorkspace.id)}/conversations`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title: normalizedTitle, setActive: true }),
+  });
+  activeConversationId = payload.activeConversationId ?? payload.conversation?.id ?? null;
+  history.length = 0;
+  chatMessages.innerHTML = "";
+  await loadConversationSummaries();
+  return payload.conversation ?? null;
+}
+
+async function appendConversationMessages(messages) {
+  if (!currentWorkspace || !activeConversationId || !Array.isArray(messages) || messages.length === 0) {
+    return;
+  }
+  await apiRequest(
+    `/api/workspaces/${encodeURIComponent(currentWorkspace.id)}/conversations/${encodeURIComponent(activeConversationId)}/messages`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages,
+        context: {
+          workspaceId: currentWorkspace.id,
+          documentId: currentWorkspace.currentDocumentId ?? null,
+          modelId: selectedModelId || null,
+          sessionShortId: currentSessionContext?.sessionShortId ?? null,
+        },
+      }),
+    },
+  );
+}
+
+async function loadConversationSummaries() {
+  if (!currentWorkspace) {
+    conversationSummaries = [];
+    return [];
+  }
+  const payload = await apiRequest(`/api/workspaces/${encodeURIComponent(currentWorkspace.id)}/conversations`);
+  conversationSummaries = Array.isArray(payload.conversations) ? payload.conversations : [];
+  if (typeof payload.activeConversationId === "string" && payload.activeConversationId) {
+    activeConversationId = payload.activeConversationId;
+  }
+  return conversationSummaries;
+}
+
+function renderConversationList() {
+  if (!chatListContainer) return;
+  chatListContainer.innerHTML = "";
+  if (!Array.isArray(conversationSummaries) || conversationSummaries.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "empty-hint";
+    empty.textContent = "No chats yet. Create one to get started.";
+    chatListContainer.appendChild(empty);
+    return;
+  }
+  for (const summary of conversationSummaries) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "chat-list-item";
+    if (summary.id === activeConversationId) {
+      button.classList.add("active");
+    }
+    const preview = summary.lastMessagePreview || "No messages yet";
+    const when = formatChatTimestamp(summary.lastMessageAt || summary.updatedAt);
+    const titleEl = document.createElement("div");
+    titleEl.className = "chat-list-title";
+    titleEl.textContent = summary.title || "Untitled chat";
+    const metaEl = document.createElement("div");
+    metaEl.className = "chat-list-meta";
+    metaEl.textContent = `${summary.messageCount ?? 0} messages · ${when}`;
+    const previewEl = document.createElement("div");
+    previewEl.className = "chat-list-meta";
+    previewEl.textContent = preview;
+    button.appendChild(titleEl);
+    button.appendChild(metaEl);
+    button.appendChild(previewEl);
+    button.addEventListener("click", () => {
+      setActiveConversation(summary.id).catch(handleError);
+    });
+    chatListContainer.appendChild(button);
+  }
+}
+
+function openChatListModal() {
+  if (!currentWorkspace) {
+    updateStatus("Open a workspace first.", "error");
+    return;
+  }
+  loadConversationSummaries()
+    .then(() => renderConversationList())
+    .then(() => {
+      chatListModal.classList.remove("hidden");
+    })
+    .catch(handleError);
+}
+
+function closeChatListModal() {
+  chatListModal.classList.add("hidden");
+}
+
+async function setActiveConversation(conversationId) {
+  if (!currentWorkspace || !conversationId) return;
+  await apiRequest(
+    `/api/workspaces/${encodeURIComponent(currentWorkspace.id)}/conversations/${encodeURIComponent(conversationId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ setActive: true }),
+    },
+  );
+  activeConversationId = conversationId;
+  await loadConversationById(conversationId);
+  await refreshChatSession();
+  saveSessionStateDebounced();
+  closeChatListModal();
+}
+
+async function maybeAutoRenameActiveConversation(userText, assistantText = "") {
+  if (!currentWorkspace || !activeConversationId) {
+    return;
+  }
+  const summary = conversationSummaries.find((entry) => entry.id === activeConversationId) ?? null;
+  if (!summary || !shouldAutoRenameConversation(summary.title)) {
+    return;
+  }
+  let nextTitle = "";
+  if (sessionId) {
+    try {
+      const titlePayload = await apiRequest(`/api/sessions/${encodeURIComponent(sessionId)}/title-suggestion`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: [
+            { role: "user", content: userText },
+            { role: "assistant", content: assistantText },
+          ],
+        }),
+      });
+      if (typeof titlePayload.title === "string" && titlePayload.title.trim()) {
+        nextTitle = titlePayload.title.trim();
+      }
+    } catch (error) {
+      console.warn("AI title suggestion failed, falling back to local title:", error);
+    }
+  }
+  if (!nextTitle) {
+    nextTitle = buildAutoConversationTitle(userText);
+  }
+  if (!nextTitle || !shouldAutoRenameConversation(summary.title) && nextTitle === summary.title) {
+    return;
+  }
+  await apiRequest(
+    `/api/workspaces/${encodeURIComponent(currentWorkspace.id)}/conversations/${encodeURIComponent(activeConversationId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: nextTitle }),
+    },
+  );
+  await loadConversationSummaries();
+}
+
+async function loadConversationById(conversationId) {
+  if (!currentWorkspace || !conversationId) {
+    return null;
+  }
+  try {
+    const payload = await apiRequest(
+      `/api/workspaces/${encodeURIComponent(currentWorkspace.id)}/conversations/${encodeURIComponent(conversationId)}`,
+    );
+    activeConversationId = payload.activeConversationId ?? payload.conversation?.id ?? conversationId;
+    renderConversationMessages(payload.messages ?? []);
+    return payload;
+  } catch (error) {
+    console.warn("Failed to load conversation payload:", error);
+    return null;
+  }
+}
+
+function hydrateWorkspaceSessionState(sessionState, activeConversationPayload = null) {
+  if (!sessionState || !currentWorkspace) {
+    return;
+  }
+  isHydrating = true;
+  try {
+    openTabs = Array.isArray(sessionState.openTabs)
+      ? sessionState.openTabs.map((tab) => ({
+          id: tab.id,
+          docId: tab.docId ?? null,
+          name: tab.name,
+          path: tab.path,
+          content: null,
+          isExternal: Boolean(tab.isExternal),
+        }))
+      : [];
+    activeTabId = sessionState.activeTabId ?? null;
+
+    expandedDirs.clear();
+    for (const dirPath of sessionState.layout?.expandedDirs ?? []) {
+      expandedDirs.add(dirPath);
+    }
+    if (hideImagesCheckbox) hideImagesCheckbox.checked = sessionState.layout?.hideImages ?? true;
+    if (hideHiddenCheckbox) hideHiddenCheckbox.checked = sessionState.layout?.hideHidden ?? true;
+    if (typeof sessionState.layout?.chatPanelWidth === "number" && sessionState.layout.chatPanelWidth > 240) {
+      mainContent.style.gridTemplateColumns = `1fr auto ${sessionState.layout.chatPanelWidth}px`;
+    }
+
+    const activeConversation = activeConversationPayload?.conversation ?? null;
+    activeConversationId = activeConversation?.id ?? sessionState.chat?.activeConversationId ?? null;
+    if (Array.isArray(activeConversationPayload?.messages)) {
+      renderConversationMessages(activeConversationPayload.messages);
+    } else {
+      history.length = 0;
+      chatMessages.innerHTML = "";
+    }
+
+    renderTabs();
+    updateContextChips();
+    if (activeTabId) {
+      const activeTab = openTabs.find((tab) => tab.id === activeTabId);
+      if (activeTab) {
+        loadTabContent(activeTab);
+      }
+    }
+  } finally {
+    isHydrating = false;
+  }
+}
+
 // Markdown Rendering
 function renderMarkdownToHtml(markdownSource) {
   try {
@@ -305,6 +677,7 @@ function createTab(doc) {
   };
   openTabs.push(tab);
   renderTabs();
+  saveSessionStateDebounced();
   return tabId;
 }
 
@@ -355,6 +728,7 @@ function activateTab(tabId) {
   activeTabId = tabId;
   renderTabs();
   updateContextChips();
+  saveSessionStateDebounced();
 
   if (tab.content !== null) {
     showMarkdownContent(tab.content, tab.path);
@@ -381,6 +755,7 @@ function closeTab(tabId) {
   
   renderTabs();
   updateContextChips();
+  saveSessionStateDebounced();
 }
 
 async function loadTabContent(tab) {
@@ -421,6 +796,7 @@ function showMarkdownContent(content, filePath) {
   
   markdownViewButton.classList.add("active");
   pdfViewButton.classList.remove("active");
+  saveSessionStateDebounced();
 }
 
 // Open document (creates tab if needed)
@@ -534,6 +910,7 @@ async function saveWorkspaceRoot() {
     body: JSON.stringify({ workspaceRoot: rootPath }),
   });
   updateStatus(`Workspace root set: ${rootPath}`);
+  await loadBootstrapState();
   
   // Clear UI when workspace root changes
   currentWorkspace = null;
@@ -628,6 +1005,7 @@ async function setCurrentAndOpenDocument(doc) {
   renderDocumentList();
   openDocument(doc);
   await refreshChatSession();
+  saveSessionStateDebounced();
 }
 
 // File Tree Functions
@@ -750,6 +1128,7 @@ function toggleDirectory(dirPath) {
     expandedDirs.add(dirPath);
   }
   renderFileTree();
+  saveSessionStateDebounced();
 }
 
 async function openFileFromTree(node) {
@@ -773,6 +1152,7 @@ async function openFileFromTree(node) {
   openTabs.push(tab);
   renderTabs();
   activateTab(tabId);
+  saveSessionStateDebounced();
   
   try {
     const absolutePath = `${currentWorkspace.path}/${node.path}`;
@@ -810,6 +1190,7 @@ async function addExternalFileToWorkspace(tab) {
     }
     
     updateStatus(`Added "${tab.name}" to workspace`);
+    saveSessionStateDebounced();
   } catch (error) {
     updateStatus(`Error adding to workspace: ${error.message}`, "error");
   }
@@ -884,7 +1265,14 @@ async function createWorkspace() {
   updateStatus(`Created workspace: ${workspace.name}`);
   await refreshWorkspaceList();
   await loadWorkspaceFiles();
+  await loadBootstrapState();
+  hydrateWorkspaceSessionState(bootstrapPayload?.workspaceSession, bootstrapPayload?.activeConversation);
+  await loadConversationSummaries();
+  if (activeConversationId) {
+    await loadConversationById(activeConversationId);
+  }
   await refreshChatSession();
+  saveSessionStateDebounced();
 }
 
 async function openSelectedWorkspace() {
@@ -911,6 +1299,12 @@ async function openSelectedWorkspace() {
   
   renderDocumentList();
   await loadWorkspaceFiles();
+  await loadBootstrapState();
+  const shouldHydratePersistedState = bootstrapPayload?.merged?.workspaceId === currentWorkspace.id;
+  if (shouldHydratePersistedState) {
+    hydrateWorkspaceSessionState(bootstrapPayload.workspaceSession, bootstrapPayload?.activeConversation);
+  }
+  await loadConversationSummaries();
   updateContextChips();
   updateStatus(`Opened workspace: ${currentWorkspace.name}`);
   const shouldRefreshSession = previousWorkspaceId !== currentWorkspace.id || !sessionId;
@@ -918,12 +1312,16 @@ async function openSelectedWorkspace() {
     await refreshChatSession();
   }
   
-  if (currentWorkspace.currentDocumentId && currentWorkspace.documents) {
+  if (!activeTabId && currentWorkspace.currentDocumentId && currentWorkspace.documents) {
     const doc = currentWorkspace.documents.find(d => d.id === currentWorkspace.currentDocumentId);
     if (doc) {
       openDocument(doc);
     }
   }
+  if (activeConversationId) {
+    await loadConversationById(activeConversationId);
+  }
+  saveSessionStateDebounced();
 }
 
 async function handleDocumentPicked(absolutePath) {
@@ -1011,7 +1409,7 @@ async function streamAssistantReply(userText) {
     }
   }
   
-  history.push({ role: "assistant", content: fullReply });
+  return fullReply;
 }
 
 async function initializeChat() {
@@ -1041,13 +1439,12 @@ async function refreshChatSession() {
     
     sessionId = result.sessionId;
     currentSessionContext = result.runtimeContext ?? null;
-    history.length = 0;
-    chatMessages.innerHTML = "";
     const activeModel = result.modelId || selectedModelId;
     renderSessionStatus(activeModel, currentSessionContext);
     sendButton.disabled = false;
     messageInput.disabled = false;
     newSessionButton.disabled = false;
+    saveSessionStateDebounced();
   } catch (error) {
     clearChatSessionState("Session error");
     handleError(error);
@@ -1081,6 +1478,7 @@ function attachResizeBehavior() {
     isDragging = false;
     document.body.style.cursor = "";
     document.body.style.userSelect = "";
+    saveSessionStateDebounced();
   });
 }
 
@@ -1097,6 +1495,8 @@ function attachKeyboardShortcuts() {
     if (event.key === "Escape") {
       if (!createWorkspaceModal.classList.contains("hidden")) {
         closeCreateWorkspaceModalFn();
+      } else if (!chatListModal.classList.contains("hidden")) {
+        closeChatListModal();
       } else if (!folderModal.classList.contains("hidden")) {
         closeFolderModal();
       }
@@ -1106,8 +1506,14 @@ function attachKeyboardShortcuts() {
 
 // Initialize
 async function initializeApp() {
+  await loadBootstrapState();
   await loadModelOptions();
   await loadWorkspaceRoot();
+  const preferredRoot = bootstrapPayload?.global?.lastRoot;
+  if (typeof preferredRoot === "string" && preferredRoot && preferredRoot !== workspaceRootInput.value.trim()) {
+    workspaceRootInput.value = preferredRoot;
+    await saveWorkspaceRoot();
+  }
   await refreshWorkspaceList();
   updateStatus("Ready");
   
@@ -1130,7 +1536,17 @@ composer.addEventListener("submit", async (event) => {
   messageInput.value = "";
   
   try {
-    await streamAssistantReply(userText);
+    if (!activeConversationId) {
+      await createConversationAndActivate("New chat");
+    }
+    const assistantReply = await streamAssistantReply(userText);
+    history.push({ role: "assistant", content: assistantReply });
+    await appendConversationMessages([
+      { role: "user", content: userText },
+      { role: "assistant", content: assistantReply },
+    ]);
+    await maybeAutoRenameActiveConversation(userText, assistantReply);
+    saveSessionStateDebounced();
   } catch (error) {
     appendMessage("system", `Error: ${error instanceof Error ? error.message : "Unknown error"}`);
   } finally {
@@ -1159,7 +1575,9 @@ addDocumentButton.addEventListener("click", () => {
 toggleFiltersButton.addEventListener("click", toggleFilterControls);
 refreshFilesButton.addEventListener("click", () => loadWorkspaceFiles().catch(handleError));
 hideImagesCheckbox.addEventListener("change", () => loadWorkspaceFiles().catch(handleError));
+hideImagesCheckbox.addEventListener("change", () => saveSessionStateDebounced());
 hideHiddenCheckbox.addEventListener("change", () => loadWorkspaceFiles().catch(handleError));
+hideHiddenCheckbox.addEventListener("change", () => saveSessionStateDebounced());
 
 // Create workspace modal events
 closeCreateWorkspaceModal.addEventListener("click", closeCreateWorkspaceModalFn);
@@ -1188,6 +1606,20 @@ folderModal.addEventListener("click", (event) => {
 createWorkspaceModal.addEventListener("click", (event) => {
   if (event.target === createWorkspaceModal) closeCreateWorkspaceModalFn();
 });
+closeChatListModalButton.addEventListener("click", closeChatListModal);
+cancelChatListButton.addEventListener("click", closeChatListModal);
+newChatFromListButton.addEventListener("click", () => {
+  createConversationAndActivate("New chat")
+    .then(() => refreshChatSession())
+    .then(() => loadConversationSummaries())
+    .then(() => renderConversationList())
+    .then(() => closeChatListModal())
+    .then(() => saveSessionStateDebounced())
+    .catch(handleError);
+});
+chatListModal.addEventListener("click", (event) => {
+  if (event.target === chatListModal) closeChatListModal();
+});
 
 // View mode events
 markdownViewButton.addEventListener("click", () => {
@@ -1205,7 +1637,7 @@ modelSelect.addEventListener("change", () => {
 });
 
 newSessionButton.addEventListener("click", () => {
-  refreshChatSession().catch(handleError);
+  openChatListModal();
 });
 
 // Initialize

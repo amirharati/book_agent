@@ -78,6 +78,17 @@ Hardening session completed on 2026-05-08; implementation shipped in `apps/web` 
 
 Keep **SDK session persistence** (**`sessionId` ↔ agent**, **`Agent.resume`**) separate unless we explicitly merge—“same chat after refresh” vs “same file open.”
 
+Status update (2026-05-08): v1 core shipped in `apps/web`:
+
+- layered persistence (`global.json`, `.book_agent_web.json`, `project.session.json`)
+- frontend hydration + debounced sync
+- chat transcript storage moved to per-conversation JSONL:
+  - `<workspace>/conversations/<conversation_id>.jsonl`
+  - `project.session.json` keeps only conversation summaries + active IDs
+
+Execution notes and checklist: **`docs/TEMP_PERSISTENCE_SESSION.md`**.
+Manual acceptance and stress checks are intentionally deferred; tracked under **Reliability & policy**.
+
 ### 3. UX / product shape (**later — explore with you**)
 
 - **Opening model:** Keep “open `.md` file/folder” vs move to explicit **projects** / **registered workspaces**.
@@ -95,6 +106,10 @@ Keep **easy path first**: Phase **1**, then **2**, then decide how much of **3**
 - **Context visibility (real issue observed):** Process cwd vs SDK session cwd can be misunderstood in chat/debugging. Add explicit “runtime context” display in UI/API logs (`session cwd`, `book config path`, selected workspace/doc) to avoid false assumptions.
 - **Legacy prototype artifacts:** `outputs/web-workspaces/**` and `workspace.json` are from older web prototype flow. Keep compatibility if needed, but migrate/clean to avoid confusion with canonical workspace files.
 - **Global installs:** After clone or new machine: **`~/.cursor/mcp.json`**, **`~/.cursor/rules/`**, optional **`~/.cursor/skills/`** symlink to this repo’s rule/skill copies—see **[USAGE.md](USAGE.md)**.
+- **Persistence hardening checks (next pass):**
+  - Corrupt-file fallback test: manually break `project.session.json` and one `conversations/*.jsonl`; verify startup + workspace open still works.
+  - Long-chat load test: run a large transcript and confirm append-only JSONL growth while `project.session.json` stays small.
+  - Add API tests for `GET /conversations/:id` and append-message summary updates (messageCount/lastMessage fields).
 
 ---
 
