@@ -19,6 +19,7 @@ Landing page for **`docs/`** — what to open first, what lives where.
 |-----|---------|
 | **[backlog.md](backlog.md)** | Short themes + **“Start next session”** checklist (web backend/UI); includes **Research Studio UI polish** (done) + follow-ups. |
 | **[PRD_WEB_APP_CURSOR_SDK.md](PRD_WEB_APP_CURSOR_SDK.md)** | Browser-first app sketch: Cursor SDK, MCP, credentials, execution options, reading/sync/annotations direction. |
+| **[PDF_MARKDOWN_DUAL_VIEW.md](PDF_MARKDOWN_DUAL_VIEW.md)** | First-class plan/backlog for PDF↔Markdown dual-view reading, sync mapping, context-aware AI, and marker-server integration. |
 
 ---
 

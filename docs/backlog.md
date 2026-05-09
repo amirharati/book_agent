@@ -56,6 +56,8 @@ Refine as needed—not blocking core flow:
 
 **Ordering:** Finish **agent/workspace coherence** before polishing persistence or richer UX. Details below are **TBD until specced**; no implementation commitment in this edit.
 
+**Current implementation priority:** Start **Phase 1 (MVP dual view)** from **[PDF_MARKDOWN_DUAL_VIEW.md](PDF_MARKDOWN_DUAL_VIEW.md)**.
+
 ### 1. Agent + workspace coherence (**partially done; continue hardening**)
 
 **Goal:** The AI reliably has **operational workspace context**: **`cwd`** (repo or book folder—TBD), **current document / book root**, **output root** wired to **`_resolved_output_dir`** when using **book-agent**, and MCP tools (`get_config`, `read`, `toc`, …) usable without the user guessing paths.
@@ -98,6 +100,15 @@ Manual acceptance and stress checks are intentionally deferred; tracked under **
 
 Keep **easy path first**: Phase **1**, then **2**, then decide how much of **3** is necessary for v1.
 
+First-class workstream doc for this track: **[PDF_MARKDOWN_DUAL_VIEW.md](PDF_MARKDOWN_DUAL_VIEW.md)**.
+
+### 4. Packaging + ingest durability
+
+- **Background local server packaging:** Ship web app as a local background service + browser client (no wrapper required initially): start/stop/status UX, health endpoint, and safe localhost access defaults.
+- **Import-by-copy default:** New document ingest should default to copying sources into workspace-managed paths (instead of link-only), so `index.json` and related assets stay stable if original source files move.
+- **Advanced mode (later):** Keep optional linked-source mode for power users, but make copy mode the safe default.
+- **Migration helper:** Add “consolidate linked sources into workspace” action for older workspaces.
+
 ---
 
 ## Reliability & policy
@@ -120,6 +131,7 @@ Keep **easy path first**: Phase **1**, then **2**, then decide how much of **3**
 - **Chat ↔ book context:** See **Next up — web app § 1** (agent grounded via **`read`** / TOC / `get_config` + one clear **workspace** story—not prompt-only path hints).
 - **Agent abstraction:** **`AgentBackend`** (or equivalent) so the UI stays host-agnostic; Cursor is the first impl; aligns with PRD §12.6 / multi-host MCP story.
 - **PDF → book:** **[marker_server](https://github.com/amirharati/marker_server)** in **[USAGE.md](USAGE.md)**; optional script: job output → **`add_document`** path conventions.
+- **Dual-view reading (PDF↔Markdown):** see **[PDF_MARKDOWN_DUAL_VIEW.md](PDF_MARKDOWN_DUAL_VIEW.md)** for phased plan, mapping model, AI context integration, and marker-server ingestion path.
 - **Reading UX (web):** Canonical **section / index model** for MD render, PDF viewer, chat context; optional **later HTML** projection—PRD §12.
 - **PDF ↔ Markdown alignment:** **At ingest/index time**: section IDs, optional page spans, **text-overlap** for selectable-text PDFs—PRD §12.2.
 - **Annotations (later):** Sidecar highlights/comments keyed to **index nodes** (+ optional PDF quads)—PRD §12.4.
