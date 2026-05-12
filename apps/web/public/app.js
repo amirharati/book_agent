@@ -22,6 +22,13 @@ const documentList = document.querySelector("#documentList");
 const setupStatus = document.querySelector("#setupStatus");
 const workspaceChip = document.querySelector("#workspaceChip");
 const documentChip = document.querySelector("#documentChip");
+const openSettingsButton = document.querySelector("#openSettingsButton");
+const jobsList = document.querySelector("#jobsList");
+const jobsSection = document.querySelector("#jobsSection");
+const pendingJobsButton = document.querySelector("#pendingJobsButton");
+const pendingJobsLabel = document.querySelector("#pendingJobsLabel");
+const toggleSetupSection = document.querySelector("#toggleSetupSection");
+const setupContent = document.querySelector("#setupContent");
 
 // DOM References - Reader
 const tabBar = document.querySelector("#tabBar");
@@ -68,6 +75,49 @@ const folderModalNewButton = document.querySelector("#folderModalNewButton");
 const closeFolderModalButton = document.querySelector("#closeFolderModalButton");
 const folderModalCancelButton = document.querySelector("#folderModalCancelButton");
 const folderList = document.querySelector("#folderList");
+const settingsModal = document.querySelector("#settingsModal");
+const closeSettingsModalButton = document.querySelector("#closeSettingsModalButton");
+const cancelSettingsButton = document.querySelector("#cancelSettingsButton");
+const saveSettingsButton = document.querySelector("#saveSettingsButton");
+const markerServerUrlInput = document.querySelector("#markerServerUrlInput");
+const markerTimeoutSecInput = document.querySelector("#markerTimeoutSecInput");
+const markerPollIntervalMsInput = document.querySelector("#markerPollIntervalMsInput");
+const conversionModal = document.querySelector("#conversionModal");
+const closeConversionModalButton = document.querySelector("#closeConversionModalButton");
+const cancelConversionModalButton = document.querySelector("#cancelConversionModalButton");
+const confirmConversionModalButton = document.querySelector("#confirmConversionModalButton");
+const conversionModalDocName = document.querySelector("#conversionModalDocName");
+const conversionModeSelect = document.querySelector("#conversionModeSelect");
+const conversionPageRangeInput = document.querySelector("#conversionPageRangeInput");
+const conversionStartNowCheckbox = document.querySelector("#conversionStartNowCheckbox");
+const toggleConversionAdvancedButton = document.querySelector("#toggleConversionAdvancedButton");
+const conversionAdvancedFields = document.querySelector("#conversionAdvancedFields");
+const convUseLlmCheckbox = document.querySelector("#convUseLlmCheckbox");
+const convLlmServiceInput = document.querySelector("#convLlmServiceInput");
+const convGeminiModelInput = document.querySelector("#convGeminiModelInput");
+const convPaginateOutputCheckbox = document.querySelector("#convPaginateOutputCheckbox");
+const convLowresImageDpiInput = document.querySelector("#convLowresImageDpiInput");
+const convExtractImagesCheckbox = document.querySelector("#convExtractImagesCheckbox");
+const convDisableImageExtractionCheckbox = document.querySelector("#convDisableImageExtractionCheckbox");
+const convForceOcrCheckbox = document.querySelector("#convForceOcrCheckbox");
+const convStripExistingOcrCheckbox = document.querySelector("#convStripExistingOcrCheckbox");
+const convDisableOcrCheckbox = document.querySelector("#convDisableOcrCheckbox");
+const convHtmlTablesCheckbox = document.querySelector("#convHtmlTablesCheckbox");
+const convKeepPageHeaderCheckbox = document.querySelector("#convKeepPageHeaderCheckbox");
+const convKeepPageFooterCheckbox = document.querySelector("#convKeepPageFooterCheckbox");
+const convAddBlockIdsCheckbox = document.querySelector("#convAddBlockIdsCheckbox");
+const convKatexCompatibleCheckbox = document.querySelector("#convKatexCompatibleCheckbox");
+const convNormalizeEquationTagsCheckbox = document.querySelector("#convNormalizeEquationTagsCheckbox");
+const convRedoInlineMathCheckbox = document.querySelector("#convRedoInlineMathCheckbox");
+const convDebugCheckbox = document.querySelector("#convDebugCheckbox");
+const pendingJobsModal = document.querySelector("#pendingJobsModal");
+const closePendingJobsModalButton = document.querySelector("#closePendingJobsModalButton");
+const closePendingJobsFooterButton = document.querySelector("#closePendingJobsFooterButton");
+const pendingJobsList = document.querySelector("#pendingJobsList");
+const jobDetailsModal = document.querySelector("#jobDetailsModal");
+const closeJobDetailsModalButton = document.querySelector("#closeJobDetailsModalButton");
+const closeJobDetailsFooterButton = document.querySelector("#closeJobDetailsFooterButton");
+const jobDetailsBody = document.querySelector("#jobDetailsBody");
 
 // DOM References - File Tree
 const fileTree = document.querySelector("#fileTree");
@@ -93,6 +143,33 @@ let activeConversationId = null;
 let bootstrapPayload = null;
 let isHydrating = false;
 let conversationSummaries = [];
+let conversionSettings = null;
+let jobsPollTimer = null;
+let workspaceJobs = [];
+let conversionTargetDocument = null;
+let jobsPollFailureCount = 0;
+
+const DEFAULT_MARKER_OPTIONS = {
+  output_format: "markdown",
+  use_llm: true,
+  llm_service: "marker.services.gemini.GoogleGeminiService",
+  gemini_model_name: "gemini-3.1-flash-lite",
+  paginate_output: true,
+  lowres_image_dpi: 150,
+  extract_images: true,
+  disable_image_extraction: false,
+  force_ocr: false,
+  strip_existing_ocr: false,
+  disable_ocr: false,
+  html_tables_in_markdown: false,
+  keep_pageheader_in_output: false,
+  keep_pagefooter_in_output: false,
+  add_block_ids: false,
+  katex_compatible: true,
+  normalize_equation_tags: true,
+  redo_inline_math: false,
+  debug: false,
+};
 
 // Tab state
 let openTabs = [];
@@ -121,6 +198,28 @@ function basename(filePath) {
 function dirname(filePath) {
   const idx = filePath.lastIndexOf("/");
   return idx > 0 ? filePath.substring(0, idx) : filePath;
+}
+
+function getImportPickerStorageKey() {
+  const workspaceId = currentWorkspace?.id ?? "global";
+  return `bookAgent:lastImportPath:${workspaceId}`;
+}
+
+function readLastImportPath() {
+  try {
+    return window.localStorage.getItem(getImportPickerStorageKey()) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function saveLastImportPath(pathValue) {
+  if (!pathValue) return;
+  try {
+    window.localStorage.setItem(getImportPickerStorageKey(), pathValue);
+  } catch {
+    // Ignore storage errors (private mode / disabled storage).
+  }
 }
 
 function updateStatus(text, type = "info") {
@@ -306,13 +405,51 @@ async function apiRequest(url, options = {}) {
 async function fetchDirectories(targetPath, includeFiles = false) {
   const params = new URLSearchParams();
   if (targetPath) params.set("path", targetPath);
-  if (includeFiles) params.set("includeFiles", "md");
+  if (includeFiles) params.set("includeFiles", "documents");
   return apiRequest(`/api/fs/list?${params.toString()}`);
 }
 
 async function loadBootstrapState() {
   bootstrapPayload = await apiRequest("/api/state/bootstrap");
+  conversionSettings = bootstrapPayload?.conversionSettings ?? conversionSettings;
   return bootstrapPayload;
+}
+
+function renderSettingsForm() {
+  const settings = conversionSettings ?? bootstrapPayload?.conversionSettings ?? {
+    markerServerUrl: "http://127.0.0.1:8001",
+    timeoutSec: 180,
+    pollIntervalMs: 2000,
+  };
+  markerServerUrlInput.value = settings.markerServerUrl ?? "http://127.0.0.1:8001";
+  markerTimeoutSecInput.value = String(settings.timeoutSec ?? 180);
+  markerPollIntervalMsInput.value = String(settings.pollIntervalMs ?? 2000);
+}
+
+function openSettingsModal() {
+  renderSettingsForm();
+  settingsModal.classList.remove("hidden");
+}
+
+function closeSettingsModal() {
+  settingsModal.classList.add("hidden");
+}
+
+async function saveConversionSettings() {
+  const payload = {
+    markerServerUrl: markerServerUrlInput.value.trim() || "http://127.0.0.1:8001",
+    timeoutSec: Number.parseInt(markerTimeoutSecInput.value, 10) || 180,
+    pollIntervalMs: Number.parseInt(markerPollIntervalMsInput.value, 10) || 2000,
+  };
+  conversionSettings = await apiRequest("/api/settings/conversion", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  bootstrapPayload = bootstrapPayload ?? {};
+  bootstrapPayload.conversionSettings = conversionSettings;
+  updateStatus("Conversion settings saved");
+  closeSettingsModal();
 }
 
 async function persistGlobalState() {
@@ -350,7 +487,12 @@ async function persistWorkspaceSessionState() {
       docId: tab.docId ?? null,
       name: tab.name,
       path: tab.path,
+      mdPath: tab.mdPath ?? null,
+      pdfPath: tab.pdfPath ?? null,
+      viewType: tab.viewType ?? "markdown",
       isExternal: Boolean(tab.isExternal),
+      scrollTop: tab.scrollTop ?? 0,
+      pdfPage: tab.pdfPage ?? 1,
     })),
     activeTabId,
     layout: {
@@ -583,8 +725,15 @@ function hydrateWorkspaceSessionState(sessionState, activeConversationPayload = 
           docId: tab.docId ?? null,
           name: tab.name,
           path: tab.path,
+          mdPath: tab.mdPath ?? null,
+          pdfPath: tab.pdfPath ?? null,
+          viewType: tab.viewType ?? "markdown",
           content: null,
+          renderedHtml: null,
+          loadFailed: false,
           isExternal: Boolean(tab.isExternal),
+          scrollTop: tab.scrollTop ?? 0,
+          pdfPage: tab.pdfPage ?? 1,
         }))
       : [];
     activeTabId = sessionState.activeTabId ?? null;
@@ -622,6 +771,9 @@ function hydrateWorkspaceSessionState(sessionState, activeConversationPayload = 
 }
 
 // Markdown Rendering
+const CHUNK_THRESHOLD_LINES = 500;
+const CHUNK_SIZE_LINES = 200;
+
 function renderMarkdownToHtml(markdownSource) {
   try {
     const rawHtml = marked.parse(markdownSource);
@@ -630,6 +782,44 @@ function renderMarkdownToHtml(markdownSource) {
     console.error("Markdown render failed:", error);
     return `<pre>${markdownSource.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c])}</pre>`;
   }
+}
+
+function splitMarkdownIntoChunks(markdownSource) {
+  const lines = markdownSource.split("\n");
+  if (lines.length < CHUNK_THRESHOLD_LINES) {
+    return [{ start: 0, end: lines.length, content: markdownSource }];
+  }
+  
+  const chunks = [];
+  let currentStart = 0;
+  
+  while (currentStart < lines.length) {
+    let end = Math.min(currentStart + CHUNK_SIZE_LINES, lines.length);
+    
+    if (end < lines.length) {
+      for (let i = end; i < Math.min(end + 50, lines.length); i++) {
+        if (/^#{1,3}\s/.test(lines[i])) {
+          end = i;
+          break;
+        }
+      }
+    }
+    
+    chunks.push({
+      start: currentStart,
+      end,
+      content: lines.slice(currentStart, end).join("\n"),
+    });
+    currentStart = end;
+  }
+  
+  return chunks;
+}
+
+function estimateChunkForScroll(chunks, scrollTop, totalHeight) {
+  if (chunks.length <= 1 || totalHeight <= 0) return 0;
+  const ratio = Math.min(1, Math.max(0, scrollTop / totalHeight));
+  return Math.floor(ratio * chunks.length);
 }
 
 function isAbsoluteUrl(value) {
@@ -657,7 +847,18 @@ function rewriteRelativeAssets(rootElement, mdFilePath) {
     const absolute = src.startsWith("/") ? src : joinPath(baseDir, src);
     img.setAttribute("src", `/api/fs/file?path=${encodeURIComponent(absolute)}`);
     img.setAttribute("loading", "lazy");
+    img.addEventListener("error", handleImageError, { once: true });
   }
+}
+
+function handleImageError(event) {
+  const img = event.target;
+  img.style.display = "none";
+  const placeholder = document.createElement("span");
+  placeholder.className = "image-error";
+  placeholder.textContent = "[Image not found]";
+  placeholder.title = img.getAttribute("src") || "Missing image";
+  img.parentNode?.insertBefore(placeholder, img);
 }
 
 // Tab Management
@@ -666,14 +867,25 @@ function generateTabId() {
 }
 
 function createTab(doc) {
+  const hasMarkdown = Boolean(doc.mdPath);
+  const hasPdf = Boolean(doc.pdfPath);
+  const sourceKind = doc.sourceKind ?? (hasMarkdown ? "markdown" : "pdf");
+  const preferPdf = sourceKind === "pdf" && !hasMarkdown && hasPdf;
   const tabId = generateTabId();
   const tab = {
     id: tabId,
     docId: doc.id,
     name: doc.name,
-    path: doc.mdPath ?? doc.sourcePath,
+    path: hasMarkdown ? doc.mdPath : (doc.pdfPath ?? doc.sourcePath),
+    mdPath: doc.mdPath ?? null,
+    pdfPath: doc.pdfPath ?? null,
+    viewType: preferPdf ? "pdf" : (hasMarkdown ? "markdown" : (hasPdf ? "pdf" : "markdown")),
     content: null,
+    renderedHtml: null,
+    loadFailed: false,
     isExternal: false,
+    scrollTop: 0,
+    pdfPage: 1,
   };
   openTabs.push(tab);
   renderTabs();
@@ -681,7 +893,37 @@ function createTab(doc) {
   return tabId;
 }
 
+let lastRenderedTabIds = "";
+
 function renderTabs() {
+  const currentTabIds = openTabs.map(t => t.id).join(",");
+  const tabsChanged = currentTabIds !== lastRenderedTabIds;
+  
+  if (!tabsChanged) {
+    for (const tabEl of tabs.querySelectorAll(".tab")) {
+      const isActive = tabEl.dataset.tabId === activeTabId;
+      tabEl.classList.toggle("active", isActive);
+      const tab = openTabs.find(t => t.id === tabEl.dataset.tabId);
+      const addBtn = tabEl.querySelector(".tab-add");
+      if (tab?.isExternal && isActive && !addBtn) {
+        const newAddBtn = document.createElement("button");
+        newAddBtn.type = "button";
+        newAddBtn.className = "tab-add";
+        newAddBtn.title = "Add to Workspace";
+        newAddBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 2v8M2 6h8"/></svg>`;
+        newAddBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          addExternalFileToWorkspace(tab).catch(handleError);
+        });
+        tabEl.insertBefore(newAddBtn, tabEl.querySelector(".tab-close"));
+      } else if (addBtn && (!tab?.isExternal || !isActive)) {
+        addBtn.remove();
+      }
+    }
+    return;
+  }
+  
+  lastRenderedTabIds = currentTabIds;
   tabs.innerHTML = "";
   for (const tab of openTabs) {
     const tabEl = document.createElement("button");
@@ -725,16 +967,48 @@ function activateTab(tabId) {
   const tab = openTabs.find(t => t.id === tabId);
   if (!tab) return;
   
+  saveCurrentTabPosition();
+  
   activeTabId = tabId;
   renderTabs();
   updateContextChips();
   saveSessionStateDebounced();
 
-  if (tab.content !== null) {
-    showMarkdownContent(tab.content, tab.path);
-  } else {
-    loadTabContent(tab);
+  if ((tab.viewType === "pdf" || tab.loadFailed) && tab.pdfPath) {
+    showPdfContent(tab.pdfPath, tab.pdfPage);
+    return;
   }
+  
+  if (tab.renderedHtml) {
+    showCachedHtml(tab.renderedHtml, tab.scrollTop);
+    return;
+  }
+  
+  if (tab.content !== null) {
+    showMarkdownContent(tab.content, tab.path, tab);
+    return;
+  }
+  
+  showLoadingState();
+  loadTabContent(tab).catch(handleError);
+}
+
+function saveCurrentTabPosition() {
+  const currentTab = openTabs.find(t => t.id === activeTabId);
+  if (!currentTab) return;
+  
+  if (currentTab.viewType === "pdf" || currentTab.loadFailed) {
+    // PDF page tracking is harder - we'll rely on persisted pdfPage for now
+  } else {
+    currentTab.scrollTop = markdownViewer.scrollTop ?? 0;
+  }
+}
+
+function showLoadingState() {
+  viewerPlaceholder.classList.add("hidden");
+  pdfViewer.classList.add("hidden");
+  markdownViewer.classList.remove("hidden");
+  markdownViewer.innerHTML = '<div class="loading-spinner"><div class="spinner"></div><span>Loading document...</span></div>';
 }
 
 function closeTab(tabId) {
@@ -760,7 +1034,21 @@ function closeTab(tabId) {
 
 async function loadTabContent(tab) {
   if (!currentWorkspace) return;
-  
+
+  if (tab.viewType === "pdf" && tab.pdfPath) {
+    showPdfContent(tab.pdfPath, tab.pdfPage);
+    preloadOtherTabs(tab.id);
+    return;
+  }
+
+  if (!tab.mdPath && tab.pdfPath) {
+    tab.viewType = "pdf";
+    showPdfContent(tab.pdfPath, tab.pdfPage);
+    showPdfStatusForTab(tab);
+    preloadOtherTabs(tab.id);
+    return;
+  }
+
   try {
     if (tab.isExternal || !tab.docId) {
       const payload = await apiRequest(`/api/fs/read?path=${encodeURIComponent(tab.path)}`);
@@ -770,13 +1058,98 @@ async function loadTabContent(tab) {
       const payload = await apiRequest(`/api/workspaces/${encodeURIComponent(currentWorkspace.id)}/documents/${encodeURIComponent(tab.docId)}/content`);
       tab.content = payload.content;
       tab.path = payload.document.mdPath ?? payload.document.sourcePath;
+      tab.mdPath = payload.document.mdPath ?? tab.mdPath;
+      tab.pdfPath = payload.document.pdfPath ?? tab.pdfPath;
+      tab.viewType = "markdown";
     }
-    
+
     if (activeTabId === tab.id) {
-      showMarkdownContent(tab.content, tab.path);
+      showMarkdownContent(tab.content, tab.path, tab);
     }
+    preloadOtherTabs(tab.id);
   } catch (error) {
-    updateStatus(`Error loading file: ${error.message}`, "error");
+    const message = error instanceof Error ? error.message : String(error);
+    const missingMarkdown = message.includes("does not have markdown content yet");
+
+    if (missingMarkdown && tab.docId) {
+      await tryFallbackToPdf(tab);
+      return;
+    }
+    if (activeTabId === tab.id) {
+      updateStatus(`Error loading file: ${message}`, "error");
+    }
+  }
+}
+
+let preloadingInProgress = false;
+async function preloadOtherTabs(excludeTabId) {
+  if (preloadingInProgress) return;
+  preloadingInProgress = true;
+  
+  try {
+    const tabsToPreload = openTabs.filter(t => 
+      t.id !== excludeTabId && 
+      t.content === null && 
+      !t.loadFailed && 
+      t.viewType !== "pdf"
+    );
+    
+    for (const tab of tabsToPreload) {
+      if (!currentWorkspace) break;
+      try {
+        if (tab.isExternal || !tab.docId) {
+          const payload = await apiRequest(`/api/fs/read?path=${encodeURIComponent(tab.path)}`);
+          tab.content = payload.content;
+          tab.path = payload.path;
+        } else if (tab.mdPath) {
+          const payload = await apiRequest(`/api/workspaces/${encodeURIComponent(currentWorkspace.id)}/documents/${encodeURIComponent(tab.docId)}/content`);
+          tab.content = payload.content;
+          tab.path = payload.document.mdPath ?? payload.document.sourcePath;
+          tab.mdPath = payload.document.mdPath ?? tab.mdPath;
+          tab.pdfPath = payload.document.pdfPath ?? tab.pdfPath;
+        }
+      } catch {
+        tab.loadFailed = true;
+      }
+    }
+  } finally {
+    preloadingInProgress = false;
+  }
+}
+
+async function tryFallbackToPdf(tab) {
+  tab.loadFailed = true;
+  let pdfPath = tab.pdfPath;
+  
+  if (!pdfPath && tab.docId && currentWorkspace) {
+    try {
+      const detail = await apiRequest(
+        `/api/workspaces/${encodeURIComponent(currentWorkspace.id)}/documents/${encodeURIComponent(tab.docId)}`,
+      );
+      pdfPath = detail?.pdfPath;
+      tab.pdfPath = pdfPath ?? tab.pdfPath;
+    } catch {
+      // Ignore fetch errors
+    }
+  }
+  
+  if (pdfPath && activeTabId === tab.id) {
+    tab.viewType = "pdf";
+    showPdfContent(pdfPath, tab.pdfPage);
+    showPdfStatusForTab(tab);
+  } else if (activeTabId === tab.id) {
+    updateStatus(`No PDF available for ${tab.name}. Run conversion first.`, "error");
+  }
+}
+
+function showPdfStatusForTab(tab) {
+  const latestJob = workspaceJobs.find((job) => job.documentId === tab.docId);
+  if (latestJob?.status === "failed") {
+    updateStatus(`Markdown conversion failed for ${tab.name}. Use Retry in Jobs.`, "error");
+  } else if (latestJob?.status === "running" || latestJob?.status === "pending") {
+    updateStatus(`Conversion in progress for ${tab.name}...`, "info");
+  } else {
+    updateStatus(`Showing PDF - markdown not ready for ${tab.name}.`, "info");
   }
 }
 
@@ -787,15 +1160,136 @@ function showPlaceholder() {
   updateContextChips();
 }
 
-function showMarkdownContent(content, filePath) {
+function showMarkdownContent(content, filePath, tabToCache = null) {
   viewerPlaceholder.classList.add("hidden");
   pdfViewer.classList.add("hidden");
   markdownViewer.classList.remove("hidden");
-  markdownViewer.innerHTML = renderMarkdownToHtml(content);
+  
+  const html = renderMarkdownToHtml(content);
+  markdownViewer.innerHTML = html;
   rewriteRelativeAssets(markdownViewer, filePath);
+  
+  if (tabToCache) {
+    tabToCache.renderedHtml = markdownViewer.innerHTML;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        markdownViewer.scrollTop = tabToCache.scrollTop ?? 0;
+      });
+    });
+  }
   
   markdownViewButton.classList.add("active");
   pdfViewButton.classList.remove("active");
+  saveSessionStateDebounced();
+}
+
+let activeChunkedTabId = null;
+
+function renderChunkedMarkdown(chunks, filePath, tabToCache = null) {
+  const targetScroll = tabToCache?.scrollTop ?? 0;
+  const currentTabId = activeTabId;
+  activeChunkedTabId = currentTabId;
+  
+  const estimatedTotalHeight = chunks.length * 800;
+  const startChunkIdx = estimateChunkForScroll(chunks, targetScroll, estimatedTotalHeight);
+  
+  const priorityOrder = [startChunkIdx];
+  for (let i = 1; i < chunks.length; i++) {
+    if (startChunkIdx - i >= 0) priorityOrder.push(startChunkIdx - i);
+    if (startChunkIdx + i < chunks.length) priorityOrder.push(startChunkIdx + i);
+  }
+  
+  const chunkElements = chunks.map((_, idx) => {
+    const placeholder = document.createElement("div");
+    placeholder.className = "chunk-placeholder";
+    placeholder.dataset.chunkIdx = idx;
+    placeholder.style.minHeight = "200px";
+    return placeholder;
+  });
+  
+  markdownViewer.innerHTML = "";
+  for (const el of chunkElements) {
+    markdownViewer.appendChild(el);
+  }
+  
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      markdownViewer.scrollTop = targetScroll;
+    });
+  });
+  
+  let renderedCount = 0;
+  const renderNextChunk = () => {
+    if (activeChunkedTabId !== currentTabId) {
+      return;
+    }
+    
+    if (renderedCount >= priorityOrder.length) {
+      if (tabToCache) {
+        tabToCache.renderedHtml = markdownViewer.innerHTML;
+      }
+      activeChunkedTabId = null;
+      return;
+    }
+    
+    const idx = priorityOrder[renderedCount];
+    const chunk = chunks[idx];
+    const placeholder = chunkElements[idx];
+    
+    const html = renderMarkdownToHtml(chunk.content);
+    const wrapper = document.createElement("div");
+    wrapper.className = "chunk-rendered";
+    wrapper.innerHTML = html;
+    rewriteRelativeAssets(wrapper, filePath);
+    
+    placeholder.replaceWith(wrapper);
+    chunkElements[idx] = wrapper;
+    
+    renderedCount++;
+    
+    if (tabToCache && renderedCount === 1) {
+      tabToCache.renderedHtml = markdownViewer.innerHTML;
+    }
+    
+    if (renderedCount < priorityOrder.length) {
+      requestAnimationFrame(renderNextChunk);
+    } else if (tabToCache) {
+      tabToCache.renderedHtml = markdownViewer.innerHTML;
+      activeChunkedTabId = null;
+    }
+  };
+  
+  requestAnimationFrame(renderNextChunk);
+}
+
+function showCachedHtml(html, scrollTop = 0) {
+  viewerPlaceholder.classList.add("hidden");
+  pdfViewer.classList.add("hidden");
+  markdownViewer.classList.remove("hidden");
+  markdownViewer.innerHTML = html;
+  
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      markdownViewer.scrollTop = scrollTop;
+    });
+  });
+  
+  markdownViewButton.classList.add("active");
+  pdfViewButton.classList.remove("active");
+}
+
+function showPdfContent(filePath, page = 1) {
+  if (!filePath) {
+    updateStatus("No PDF available for this document.", "error");
+    return;
+  }
+  viewerPlaceholder.classList.add("hidden");
+  markdownViewer.classList.add("hidden");
+  pdfViewer.classList.remove("hidden");
+  const pageParam = page > 1 ? `#page=${page}` : "";
+  pdfViewer.src = `/api/fs/file?path=${encodeURIComponent(filePath)}${pageParam}`;
+  markdownViewButton.classList.remove("active");
+  pdfViewButton.classList.add("active");
   saveSessionStateDebounced();
 }
 
@@ -803,11 +1297,76 @@ function showMarkdownContent(content, filePath) {
 function openDocument(doc) {
   const existingTab = openTabs.find(t => t.docId === doc.id);
   if (existingTab) {
+    existingTab.name = doc.name;
+    const previousMdPath = existingTab.mdPath;
+    const nextMdPath = doc.mdPath ?? null;
+    const nextPdfPath = doc.pdfPath ?? null;
+    const mdPathChanged = previousMdPath !== nextMdPath;
+    if (mdPathChanged) {
+      existingTab.content = null;
+      existingTab.renderedHtml = null;
+      existingTab.loadFailed = false;
+    }
+    existingTab.mdPath = nextMdPath;
+    existingTab.pdfPath = nextPdfPath;
+    if (existingTab.mdPath) {
+      existingTab.path = existingTab.mdPath;
+      if (!previousMdPath || existingTab.loadFailed) {
+        existingTab.viewType = "markdown";
+      }
+    } else if (existingTab.pdfPath) {
+      existingTab.path = existingTab.pdfPath;
+      existingTab.viewType = "pdf";
+    }
     activateTab(existingTab.id);
   } else {
     const tabId = createTab(doc);
     activateTab(tabId);
   }
+}
+
+function syncOpenTabsWithWorkspaceDocuments() {
+  if (!currentWorkspace) return false;
+  let activeTabNeedsReload = false;
+  for (const tab of openTabs) {
+    if (tab.isExternal || !tab.docId) continue;
+    const doc = currentWorkspace.documents?.find(d => d.id === tab.docId);
+    if (!doc) continue;
+    const previousMdPath = tab.mdPath ?? null;
+    const nextMdPath = doc.mdPath ?? null;
+    const nextPdfPath = doc.pdfPath ?? null;
+    const mdPathChanged = previousMdPath !== nextMdPath;
+    const pdfPathChanged = (tab.pdfPath ?? null) !== nextPdfPath;
+    if (!mdPathChanged && !pdfPathChanged && tab.name === doc.name) {
+      continue;
+    }
+    tab.name = doc.name;
+    tab.mdPath = nextMdPath;
+    tab.pdfPath = nextPdfPath;
+    if (mdPathChanged) {
+      tab.content = null;
+      tab.renderedHtml = null;
+      tab.loadFailed = false;
+      if (tab.mdPath) {
+        tab.path = tab.mdPath;
+        if (!previousMdPath || tab.viewType === "pdf") {
+          tab.viewType = "markdown";
+        }
+      } else if (tab.pdfPath) {
+        tab.path = tab.pdfPath;
+      }
+      if (tab.id === activeTabId) {
+        activeTabNeedsReload = true;
+      }
+    } else if (pdfPathChanged && !tab.mdPath && tab.pdfPath) {
+      tab.path = tab.pdfPath;
+      if (tab.id === activeTabId && tab.viewType === "pdf") {
+        activeTabNeedsReload = true;
+      }
+    }
+  }
+  renderTabs();
+  return activeTabNeedsReload;
 }
 
 // Folder Modal
@@ -843,7 +1402,7 @@ async function renderFolderModal(pathToLoad) {
     const empty = document.createElement("p");
     empty.className = "empty-hint";
     empty.style.padding = "var(--space-4)";
-    empty.textContent = includeFiles ? "No folders or markdown files here." : "No subfolders here.";
+    empty.textContent = includeFiles ? "No folders or markdown/pdf files here." : "No subfolders here.";
     folderList.appendChild(empty);
     return;
   }
@@ -917,6 +1476,7 @@ async function saveWorkspaceRoot() {
   openTabs = [];
   activeTabId = null;
   workspaceFileTree = [];
+  renderJobs([]);
   clearChatSessionState("Open a workspace to start");
   renderTabs();
   showPlaceholder();
@@ -977,13 +1537,25 @@ function renderDocumentList() {
       item.classList.add("active");
     }
     
+    const convertButton = (doc.pdfPath)
+      ? `<button class="btn btn-ghost btn-icon doc-convert-btn" title="Convert PDF to markdown">⚙</button>`
+      : "";
     item.innerHTML = `
       <svg class="document-item-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
         <path d="M4 2h6l4 4v8a1 1 0 01-1 1H4a1 1 0 01-1-1V3a1 1 0 011-1z"/>
         <path d="M10 2v4h4"/>
       </svg>
       <span class="document-item-name">${doc.name}</span>
+      ${convertButton}
     `;
+    const convertBtn = item.querySelector(".doc-convert-btn");
+    if (convertBtn) {
+      convertBtn.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openConversionModalForDocument(doc);
+      });
+    }
     
     item.addEventListener("click", () => {
       setCurrentAndOpenDocument(doc).catch(handleError);
@@ -996,16 +1568,387 @@ function renderDocumentList() {
 async function setCurrentAndOpenDocument(doc) {
   if (!currentWorkspace) return;
   
-  currentWorkspace = await apiRequest(`/api/workspaces/${encodeURIComponent(currentWorkspace.id)}/current-document`, {
+  currentWorkspace.currentDocumentId = doc.id;
+  renderDocumentList();
+  openDocument(doc);
+  saveSessionStateDebounced();
+  
+  apiRequest(`/api/workspaces/${encodeURIComponent(currentWorkspace.id)}/current-document`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ documentId: doc.id }),
+  }).catch((err) => console.warn("Background current-document update failed:", err));
+}
+
+function getRunningJob() {
+  return workspaceJobs.find((job) => job.status === "running") ?? null;
+}
+
+function getPendingJobs() {
+  return workspaceJobs.filter((job) => job.status === "pending");
+}
+
+function getLatestJobForDocument(documentId) {
+  return workspaceJobs.find((job) => job.documentId === documentId) ?? null;
+}
+
+function openConversionModalForDocument(doc) {
+  conversionTargetDocument = doc;
+  conversionModalDocName.textContent = doc?.name ? `Document: ${doc.name}` : "Document";
+  conversionModeSelect.value = doc?.mdPath ? "overwrite" : "default";
+  conversionPageRangeInput.value = "";
+  conversionStartNowCheckbox.checked = true;
+  applyDefaultConversionAdvancedOptions();
+  conversionAdvancedFields.classList.add("hidden");
+  toggleConversionAdvancedButton.textContent = "Advanced options";
+  conversionModal.classList.remove("hidden");
+}
+
+function closeConversionModal() {
+  conversionModal.classList.add("hidden");
+  conversionTargetDocument = null;
+}
+
+function applyDefaultConversionAdvancedOptions() {
+  convUseLlmCheckbox.checked = DEFAULT_MARKER_OPTIONS.use_llm;
+  convLlmServiceInput.value = DEFAULT_MARKER_OPTIONS.llm_service;
+  convGeminiModelInput.value = DEFAULT_MARKER_OPTIONS.gemini_model_name;
+  convPaginateOutputCheckbox.checked = DEFAULT_MARKER_OPTIONS.paginate_output;
+  convLowresImageDpiInput.value = String(DEFAULT_MARKER_OPTIONS.lowres_image_dpi);
+  convExtractImagesCheckbox.checked = DEFAULT_MARKER_OPTIONS.extract_images;
+  convDisableImageExtractionCheckbox.checked = DEFAULT_MARKER_OPTIONS.disable_image_extraction;
+  convForceOcrCheckbox.checked = DEFAULT_MARKER_OPTIONS.force_ocr;
+  convStripExistingOcrCheckbox.checked = DEFAULT_MARKER_OPTIONS.strip_existing_ocr;
+  convDisableOcrCheckbox.checked = DEFAULT_MARKER_OPTIONS.disable_ocr;
+  convHtmlTablesCheckbox.checked = DEFAULT_MARKER_OPTIONS.html_tables_in_markdown;
+  convKeepPageHeaderCheckbox.checked = DEFAULT_MARKER_OPTIONS.keep_pageheader_in_output;
+  convKeepPageFooterCheckbox.checked = DEFAULT_MARKER_OPTIONS.keep_pagefooter_in_output;
+  convAddBlockIdsCheckbox.checked = DEFAULT_MARKER_OPTIONS.add_block_ids;
+  convKatexCompatibleCheckbox.checked = DEFAULT_MARKER_OPTIONS.katex_compatible;
+  convNormalizeEquationTagsCheckbox.checked = DEFAULT_MARKER_OPTIONS.normalize_equation_tags;
+  convRedoInlineMathCheckbox.checked = DEFAULT_MARKER_OPTIONS.redo_inline_math;
+  convDebugCheckbox.checked = DEFAULT_MARKER_OPTIONS.debug;
+}
+
+function collectConversionAdvancedOptions() {
+  return {
+    output_format: "markdown",
+    use_llm: Boolean(convUseLlmCheckbox.checked),
+    llm_service: convLlmServiceInput.value.trim() || DEFAULT_MARKER_OPTIONS.llm_service,
+    gemini_model_name: convGeminiModelInput.value.trim() || DEFAULT_MARKER_OPTIONS.gemini_model_name,
+    paginate_output: Boolean(convPaginateOutputCheckbox.checked),
+    lowres_image_dpi: Number.parseInt(convLowresImageDpiInput.value, 10) || DEFAULT_MARKER_OPTIONS.lowres_image_dpi,
+    extract_images: Boolean(convExtractImagesCheckbox.checked),
+    disable_image_extraction: Boolean(convDisableImageExtractionCheckbox.checked),
+    force_ocr: Boolean(convForceOcrCheckbox.checked),
+    strip_existing_ocr: Boolean(convStripExistingOcrCheckbox.checked),
+    disable_ocr: Boolean(convDisableOcrCheckbox.checked),
+    html_tables_in_markdown: Boolean(convHtmlTablesCheckbox.checked),
+    keep_pageheader_in_output: Boolean(convKeepPageHeaderCheckbox.checked),
+    keep_pagefooter_in_output: Boolean(convKeepPageFooterCheckbox.checked),
+    add_block_ids: Boolean(convAddBlockIdsCheckbox.checked),
+    katex_compatible: Boolean(convKatexCompatibleCheckbox.checked),
+    normalize_equation_tags: Boolean(convNormalizeEquationTagsCheckbox.checked),
+    redo_inline_math: Boolean(convRedoInlineMathCheckbox.checked),
+    debug: Boolean(convDebugCheckbox.checked),
+  };
+}
+
+async function createConversionJobFromModal() {
+  if (!currentWorkspace || !conversionTargetDocument) {
+    throw new Error("Select a PDF document first.");
+  }
+  const docName = conversionTargetDocument.name;
+  const payload = {
+    preset: "default_native_pdf",
+    mode: conversionModeSelect.value,
+    testPageRange: conversionPageRangeInput.value.trim() || null,
+    startNow: Boolean(conversionStartNowCheckbox.checked),
+    options: collectConversionAdvancedOptions(),
+  };
+  const response = await apiRequest(
+    `/api/workspaces/${encodeURIComponent(currentWorkspace.id)}/documents/${encodeURIComponent(conversionTargetDocument.id)}/conversions`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+  );
+  closeConversionModal();
+  await loadWorkspaceJobs();
+  startJobsPolling();
+  updateStatus(`Created conversion job for ${docName}`);
+  return response;
+}
+
+async function startQueuedJob(jobId) {
+  if (!currentWorkspace) return;
+  await apiRequest(`/api/workspaces/${encodeURIComponent(currentWorkspace.id)}/jobs/${encodeURIComponent(jobId)}/start`, {
+    method: "POST",
   });
+  await loadWorkspaceJobs();
+  startJobsPolling();
+}
+
+async function cancelQueuedJob(jobId) {
+  if (!currentWorkspace) return;
+  await apiRequest(`/api/workspaces/${encodeURIComponent(currentWorkspace.id)}/jobs/${encodeURIComponent(jobId)}/cancel`, {
+    method: "POST",
+  });
+  await loadWorkspaceJobs();
+}
+
+async function retryDocumentConversion(documentId, displayName = "document") {
+  if (!currentWorkspace) {
+    throw new Error("Open a workspace first.");
+  }
+  const detail = await apiRequest(
+    `/api/workspaces/${encodeURIComponent(currentWorkspace.id)}/documents/${encodeURIComponent(documentId)}`,
+  );
+  openConversionModalForDocument({
+    id: documentId,
+    name: detail?.name ?? displayName,
+    mdPath: detail?.mdPath ?? null,
+  });
+}
+
+function formatPercent(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  return Math.max(0, Math.min(100, Math.round(numeric)));
+}
+
+function formatJobMeta(job) {
+  const chunks = [];
+  const progress = formatPercent(job?.progress);
+  const taskProgress = formatPercent(job?.taskProgress);
+  if (progress !== null) {
+    chunks.push(`${progress}%`);
+  }
+  if (typeof job?.task === "string" && job.task.trim()) {
+    if (taskProgress !== null) {
+      chunks.push(`${job.task.trim()} ${taskProgress}%`);
+    } else {
+      chunks.push(job.task.trim());
+    }
+  }
+  const pipelineIndex = Number(job?.pipelineIndex);
+  const pipelineTotal = Number(job?.pipelineTotal);
+  if (Number.isFinite(pipelineIndex) && Number.isFinite(pipelineTotal) && pipelineTotal > 0) {
+    chunks.push(`step ${pipelineIndex}/${pipelineTotal}`);
+  }
+  const elapsedSec = Number(job?.elapsedSec);
+  if (Number.isFinite(elapsedSec) && elapsedSec >= 0) {
+    chunks.push(`${Math.round(elapsedSec)}s`);
+  }
+  return chunks.join(" · ");
+}
+
+function compactJobText(value, maxLen = 72) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  return text.length > maxLen ? `${text.slice(0, maxLen - 1)}…` : text;
+}
+
+function summarizeJobMessage(job) {
+  const raw = job?.errorMessage || job?.message || "";
+  const lower = raw.toLowerCase();
+  if (lower.includes("marker server") && (lower.includes("failed") || lower.includes("fetch") || lower.includes("status"))) {
+    return "Marker server unreachable. Check URL/server.";
+  }
+  if (lower.includes("fetch failed")) {
+    return "Network error while contacting Marker server.";
+  }
+  return compactJobText(raw, 88);
+}
+
+function openJobDetailsModal(job) {
+  if (!job) return;
+  const details = {
+    id: job.id,
+    documentId: job.documentId,
+    status: job.status,
+    mode: job.mode,
+    preset: job.preset,
+    progress: job.progress,
+    task: job.task,
+    taskProgress: job.taskProgress,
+    pipelineIndex: job.pipelineIndex,
+    pipelineTotal: job.pipelineTotal,
+    elapsedSec: job.elapsedSec,
+    message: job.message,
+    errorMessage: job.errorMessage,
+    testPageRange: job.testPageRange,
+    createdAt: job.createdAt,
+    startedAt: job.startedAt,
+    finishedAt: job.finishedAt,
+    markerJobId: job.markerJobId,
+    markerOptions: job.markerOptions ?? null,
+  };
+  jobDetailsBody.innerHTML = `<pre class="job-detail-json">${JSON.stringify(details, null, 2)}</pre>`;
+  jobDetailsModal.classList.remove("hidden");
+}
+
+function closeJobDetailsModal() {
+  jobDetailsModal.classList.add("hidden");
+}
+
+function renderJobs(jobs) {
+  workspaceJobs = Array.isArray(jobs) ? jobs : [];
+  jobsList.innerHTML = "";
   
-  renderDocumentList();
-  openDocument(doc);
-  await refreshChatSession();
-  saveSessionStateDebounced();
+  const running = getRunningJob();
+  const pending = getPendingJobs();
+  const hasActivity = running || pending.length > 0;
+  
+  if (!hasActivity) {
+    jobsSection.classList.add("hidden");
+    pendingJobsButton.classList.add("hidden");
+    return;
+  }
+  
+  jobsSection.classList.remove("hidden");
+  
+  if (pending.length > 0) {
+    pendingJobsButton.classList.remove("hidden");
+    pendingJobsLabel.textContent = `${pending.length} pending`;
+  } else {
+    pendingJobsButton.classList.add("hidden");
+  }
+
+  const primary = running ?? pending[0];
+  const strip = document.createElement("button");
+  strip.type = "button";
+  strip.className = `job-strip${jobsPollFailureCount > 0 ? " error" : ""}`;
+  const label = running ? "Converting" : "Pending";
+  const progressPct = formatPercent(primary.progress);
+  const topMeta = running && progressPct !== null ? `${progressPct}%` : "";
+  const statusText = jobsPollFailureCount > 0
+    ? "Server may be down"
+    : summarizeJobMessage(primary) || primary.documentId;
+  strip.innerHTML = `
+    <div class="job-strip-line">
+      <span class="job-strip-title">${label}: ${statusText}</span>
+      ${topMeta ? `<span>${topMeta}</span>` : ""}
+    </div>
+    ${running && progressPct !== null ? `<progress class="job-progress" max="100" value="${progressPct}"></progress>` : ""}
+  `;
+  strip.addEventListener("click", () => openJobDetailsModal(primary));
+  jobsList.appendChild(strip);
+
+  const actions = document.createElement("div");
+  actions.className = "job-item-actions";
+  if (running) {
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "btn btn-ghost btn-sm";
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.addEventListener("click", () => cancelQueuedJob(primary.id).catch(handleError));
+    actions.appendChild(cancelBtn);
+  } else if (pending.length > 0) {
+    const startBtn = document.createElement("button");
+    startBtn.type = "button";
+    startBtn.className = "btn btn-primary btn-sm";
+    startBtn.textContent = "Start";
+    startBtn.addEventListener("click", () => startQueuedJob(primary.id).catch(handleError));
+    actions.appendChild(startBtn);
+  }
+  if (actions.children.length > 0) {
+    jobsList.appendChild(actions);
+  }
+}
+
+function renderPendingJobsModal() {
+  const pending = getPendingJobs();
+  pendingJobsList.innerHTML = "";
+  if (pending.length === 0) {
+    pendingJobsList.innerHTML = `<p class="empty-hint">No pending jobs.</p>`;
+    return;
+  }
+  const hasRunning = Boolean(getRunningJob());
+  for (const job of pending) {
+    const entry = document.createElement("article");
+    entry.className = "chat-list-item";
+    entry.innerHTML = `
+      <div class="chat-list-title">${job.documentId}</div>
+      <div class="chat-list-meta">${job.message || "Pending"}</div>
+      <div class="chat-list-meta">Mode: ${job.mode || "default"}${job.testPageRange ? ` · pages ${job.testPageRange}` : ""}</div>
+    `;
+    const actions = document.createElement("div");
+    actions.className = "job-item-actions";
+    const startBtn = document.createElement("button");
+    startBtn.type = "button";
+    startBtn.className = "btn btn-primary";
+    startBtn.textContent = "Run";
+    startBtn.disabled = hasRunning;
+    startBtn.addEventListener("click", () => {
+      startQueuedJob(job.id)
+        .then(() => {
+          renderPendingJobsModal();
+        })
+        .catch(handleError);
+    });
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "btn btn-secondary";
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.addEventListener("click", () => {
+      cancelQueuedJob(job.id)
+        .then(() => {
+          renderPendingJobsModal();
+        })
+        .catch(handleError);
+    });
+    actions.appendChild(startBtn);
+    actions.appendChild(cancelBtn);
+    entry.appendChild(actions);
+    pendingJobsList.appendChild(entry);
+  }
+}
+
+function openPendingJobsModal() {
+  renderPendingJobsModal();
+  pendingJobsModal.classList.remove("hidden");
+}
+
+function closePendingJobsModal() {
+  pendingJobsModal.classList.add("hidden");
+}
+
+async function loadWorkspaceJobs() {
+  if (!currentWorkspace) {
+    renderJobs([]);
+    return [];
+  }
+  const payload = await apiRequest(`/api/workspaces/${encodeURIComponent(currentWorkspace.id)}/jobs`);
+  jobsPollFailureCount = 0;
+  const jobs = Array.isArray(payload.jobs) ? payload.jobs : [];
+  renderJobs(jobs);
+  if (jobs.some((job) => job.status === "running")) {
+    startJobsPolling();
+  }
+  return jobs;
+}
+
+function startJobsPolling() {
+  if (jobsPollTimer) return;
+  jobsPollTimer = window.setInterval(async () => {
+    try {
+      const jobs = await loadWorkspaceJobs();
+      if (jobs.every((job) => job.status !== "running")) {
+        window.clearInterval(jobsPollTimer);
+        jobsPollTimer = null;
+        await refreshWorkspaceList();
+      }
+    } catch (error) {
+      jobsPollFailureCount += 1;
+      if (jobsPollFailureCount >= 2) {
+        updateStatus("Cannot refresh job status. Marker/web server may be down.", "error");
+        renderJobs(workspaceJobs);
+      }
+      console.warn("Job polling failed:", error);
+    }
+  }, 2000);
 }
 
 // File Tree Functions
@@ -1062,7 +2005,7 @@ function renderFileTree() {
 function renderTreeNode(node, depth) {
   const container = document.createElement("div");
   container.className = "tree-node";
-  container.style.paddingLeft = `${depth * 12}px`;
+  container.style.paddingLeft = `${Math.min(depth * 8, 56)}px`;
 
   const item = document.createElement("button");
   item.type = "button";
@@ -1141,13 +2084,21 @@ async function openFileFromTree(node) {
   }
 
   const tabId = generateTabId();
+  const isPdf = node.name.toLowerCase().endsWith(".pdf");
   const tab = {
     id: tabId,
     docId: null,
     name: node.name,
     path: `${currentWorkspace.path}/${node.path}`,
+    mdPath: isPdf ? null : `${currentWorkspace.path}/${node.path}`,
+    pdfPath: isPdf ? `${currentWorkspace.path}/${node.path}` : null,
+    viewType: isPdf ? "pdf" : "markdown",
     content: null,
+    renderedHtml: null,
+    loadFailed: false,
     isExternal: true,
+    scrollTop: 0,
+    pdfPage: 1,
   };
   openTabs.push(tab);
   renderTabs();
@@ -1161,7 +2112,7 @@ async function openFileFromTree(node) {
     tab.path = payload.path;
     
     if (activeTabId === tabId) {
-      showMarkdownContent(tab.content, tab.path);
+      showMarkdownContent(tab.content, tab.path, tab);
     }
   } catch (error) {
     updateStatus(`Error loading file: ${error.message}`, "error");
@@ -1181,12 +2132,16 @@ async function addExternalFileToWorkspace(tab) {
     currentWorkspace = updated;
     renderDocumentList();
     loadWorkspaceFiles();
+    await loadWorkspaceJobs();
     
     const newDoc = currentWorkspace.documents?.find(d => d.sourcePath === tab.path || d.name === tab.name);
     if (newDoc) {
       tab.docId = newDoc.id;
       tab.isExternal = false;
       renderTabs();
+      if (newDoc.pdfPath && !newDoc.mdPath) {
+        openConversionModalForDocument(newDoc);
+      }
     }
     
     updateStatus(`Added "${tab.name}" to workspace`);
@@ -1206,26 +2161,38 @@ async function refreshWorkspaceList() {
   workspaceRootInput.value = workspaceLibraryRoot;
   workspaces = payload.workspaces;
   serverCurrentWorkspaceId = typeof payload.currentWorkspace === "string" ? payload.currentWorkspace : "";
-  
-  if (currentWorkspace) {
-    const stillExists = workspaces.find((ws) => ws.id === currentWorkspace.id);
-    if (!stillExists) currentWorkspace = null;
-  }
-  
-  if (!currentWorkspace && serverCurrentWorkspaceId) {
-    const match = workspaces.find((ws) => ws.id === serverCurrentWorkspaceId);
-    if (match) {
-      currentWorkspace = match;
+
+  const preferredWorkspaceId = currentWorkspace?.id || serverCurrentWorkspaceId || "";
+  if (preferredWorkspaceId) {
+    const stillExists = workspaces.find((ws) => ws.id === preferredWorkspaceId);
+    if (stillExists) {
+      try {
+        currentWorkspace = await apiRequest(`/api/workspaces/${encodeURIComponent(preferredWorkspaceId)}`);
+      } catch (error) {
+        console.warn("Failed to refresh full workspace details:", error);
+        if (currentWorkspace?.id !== preferredWorkspaceId) {
+          currentWorkspace = null;
+        }
+      }
+    } else if (currentWorkspace?.id === preferredWorkspaceId) {
+      currentWorkspace = null;
     }
+  } else {
+    currentWorkspace = null;
   }
+
   if (!currentWorkspace) {
     clearChatSessionState("Open a workspace to start");
   }
   
   renderWorkspaceOptions();
   renderDocumentList();
+  const activeTabNeedsReload = syncOpenTabsWithWorkspaceDocuments();
   renderFileTree();
   updateContextChips();
+  if (activeTabNeedsReload && activeTabId) {
+    activateTab(activeTabId);
+  }
 }
 
 // Create Workspace Modal
@@ -1255,23 +2222,30 @@ async function createWorkspace() {
   
   currentWorkspace = workspace;
   
-  // Clear tabs for new workspace
   openTabs = [];
   activeTabId = null;
+  lastRenderedTabIds = "";
   renderTabs();
   showPlaceholder();
   
   closeCreateWorkspaceModalFn();
   updateStatus(`Created workspace: ${workspace.name}`);
-  await refreshWorkspaceList();
-  await loadWorkspaceFiles();
-  await loadBootstrapState();
+  
+  await Promise.all([
+    refreshWorkspaceList(),
+    loadWorkspaceFiles(),
+    loadWorkspaceJobs(),
+    loadBootstrapState(),
+    loadConversationSummaries(),
+  ]);
+  
   hydrateWorkspaceSessionState(bootstrapPayload?.workspaceSession, bootstrapPayload?.activeConversation);
-  await loadConversationSummaries();
+  
   if (activeConversationId) {
-    await loadConversationById(activeConversationId);
+    loadConversationById(activeConversationId).catch(handleError);
   }
-  await refreshChatSession();
+  
+  refreshChatSession().catch(handleError);
   saveSessionStateDebounced();
 }
 
@@ -1289,28 +2263,17 @@ async function openSelectedWorkspace() {
     method: "POST",
   });
   
-  // Clear tabs if switching to a different workspace
   if (previousWorkspaceId !== currentWorkspace.id) {
     openTabs = [];
     activeTabId = null;
+    lastRenderedTabIds = "";
     renderTabs();
     showPlaceholder();
   }
   
   renderDocumentList();
-  await loadWorkspaceFiles();
-  await loadBootstrapState();
-  const shouldHydratePersistedState = bootstrapPayload?.merged?.workspaceId === currentWorkspace.id;
-  if (shouldHydratePersistedState) {
-    hydrateWorkspaceSessionState(bootstrapPayload.workspaceSession, bootstrapPayload?.activeConversation);
-  }
-  await loadConversationSummaries();
   updateContextChips();
   updateStatus(`Opened workspace: ${currentWorkspace.name}`);
-  const shouldRefreshSession = previousWorkspaceId !== currentWorkspace.id || !sessionId;
-  if (shouldRefreshSession) {
-    await refreshChatSession();
-  }
   
   if (!activeTabId && currentWorkspace.currentDocumentId && currentWorkspace.documents) {
     const doc = currentWorkspace.documents.find(d => d.id === currentWorkspace.currentDocumentId);
@@ -1318,8 +2281,26 @@ async function openSelectedWorkspace() {
       openDocument(doc);
     }
   }
+  
+  const [bootstrapResult] = await Promise.all([
+    loadBootstrapState(),
+    loadWorkspaceFiles(),
+    loadWorkspaceJobs(),
+    loadConversationSummaries(),
+  ]);
+  
+  const shouldHydratePersistedState = bootstrapPayload?.merged?.workspaceId === currentWorkspace.id;
+  if (shouldHydratePersistedState) {
+    hydrateWorkspaceSessionState(bootstrapPayload.workspaceSession, bootstrapPayload?.activeConversation);
+  }
+  
+  const shouldRefreshSession = previousWorkspaceId !== currentWorkspace.id || !sessionId;
+  if (shouldRefreshSession) {
+    refreshChatSession().catch(handleError);
+  }
+  
   if (activeConversationId) {
-    await loadConversationById(activeConversationId);
+    loadConversationById(activeConversationId).catch(handleError);
   }
   saveSessionStateDebounced();
 }
@@ -1338,12 +2319,17 @@ async function handleDocumentPicked(absolutePath) {
   
   currentWorkspace = updated;
   closeFolderModal();
+  saveLastImportPath(dirname(absolutePath));
   await refreshWorkspaceList();
+  await loadWorkspaceJobs();
   updateStatus(`Added document: ${basename(absolutePath)}`);
   
   const newDoc = currentWorkspace.documents.find(d => d.sourcePath === absolutePath || d.mdPath?.endsWith(basename(absolutePath)));
   if (newDoc) {
     openDocument(newDoc);
+    if (newDoc.pdfPath && !newDoc.mdPath) {
+      openConversionModalForDocument(newDoc);
+    }
   }
 }
 
@@ -1497,8 +2483,16 @@ function attachKeyboardShortcuts() {
         closeCreateWorkspaceModalFn();
       } else if (!chatListModal.classList.contains("hidden")) {
         closeChatListModal();
+      } else if (!pendingJobsModal.classList.contains("hidden")) {
+        closePendingJobsModal();
+      } else if (!conversionModal.classList.contains("hidden")) {
+        closeConversionModal();
+      } else if (!jobDetailsModal.classList.contains("hidden")) {
+        closeJobDetailsModal();
       } else if (!folderModal.classList.contains("hidden")) {
         closeFolderModal();
+      } else if (!settingsModal.classList.contains("hidden")) {
+        closeSettingsModal();
       }
     }
   });
@@ -1559,6 +2553,12 @@ composer.addEventListener("submit", async (event) => {
 // Sidebar events
 pickWorkspaceRootButton.addEventListener("click", () => openModal("pick-workspace-root", "Select Workspace Root", workspaceRootInput.value));
 createWorkspaceButton.addEventListener("click", openCreateWorkspaceModal);
+
+toggleSetupSection.addEventListener("click", () => {
+  const expanded = toggleSetupSection.getAttribute("aria-expanded") === "true";
+  toggleSetupSection.setAttribute("aria-expanded", !expanded);
+  setupContent.classList.toggle("collapsed", expanded);
+});
 openWorkspaceButton.addEventListener("click", () => openSelectedWorkspace().catch(handleError));
 workspaceSelect.addEventListener("change", () => {
   if (workspaceSelect.value) {
@@ -1567,8 +2567,16 @@ workspaceSelect.addEventListener("change", () => {
 });
 addDocumentButton.addEventListener("click", () => {
   ensureWorkspaceRootApplied()
-    .then(() => openModal("pick-document-file", "Add Document", currentWorkspace ? currentWorkspace.path : workspaceRootInput.value))
+    .then(() => {
+      const lastImportPath = readLastImportPath();
+      const startPath = lastImportPath || (currentWorkspace ? currentWorkspace.path : workspaceRootInput.value);
+      openModal("pick-document-file", "Add Document", startPath);
+    })
     .catch(handleError);
+});
+openSettingsButton.addEventListener("click", openSettingsModal);
+pendingJobsButton.addEventListener("click", () => {
+  openPendingJobsModal();
 });
 
 // File tree events
@@ -1603,6 +2611,33 @@ folderModalCancelButton.addEventListener("click", closeFolderModal);
 folderModal.addEventListener("click", (event) => {
   if (event.target === folderModal) closeFolderModal();
 });
+closeSettingsModalButton.addEventListener("click", closeSettingsModal);
+cancelSettingsButton.addEventListener("click", closeSettingsModal);
+saveSettingsButton.addEventListener("click", () => saveConversionSettings().catch(handleError));
+settingsModal.addEventListener("click", (event) => {
+  if (event.target === settingsModal) closeSettingsModal();
+});
+closeConversionModalButton.addEventListener("click", closeConversionModal);
+cancelConversionModalButton.addEventListener("click", closeConversionModal);
+confirmConversionModalButton.addEventListener("click", () => createConversionJobFromModal().catch(handleError));
+toggleConversionAdvancedButton.addEventListener("click", () => {
+  conversionAdvancedFields.classList.toggle("hidden");
+  const expanded = !conversionAdvancedFields.classList.contains("hidden");
+  toggleConversionAdvancedButton.textContent = expanded ? "Hide advanced options" : "Advanced options";
+});
+conversionModal.addEventListener("click", (event) => {
+  if (event.target === conversionModal) closeConversionModal();
+});
+closePendingJobsModalButton.addEventListener("click", closePendingJobsModal);
+closePendingJobsFooterButton.addEventListener("click", closePendingJobsModal);
+pendingJobsModal.addEventListener("click", (event) => {
+  if (event.target === pendingJobsModal) closePendingJobsModal();
+});
+closeJobDetailsModalButton.addEventListener("click", closeJobDetailsModal);
+closeJobDetailsFooterButton.addEventListener("click", closeJobDetailsModal);
+jobDetailsModal.addEventListener("click", (event) => {
+  if (event.target === jobDetailsModal) closeJobDetailsModal();
+});
 createWorkspaceModal.addEventListener("click", (event) => {
   if (event.target === createWorkspaceModal) closeCreateWorkspaceModalFn();
 });
@@ -1624,8 +2659,21 @@ chatListModal.addEventListener("click", (event) => {
 // View mode events
 markdownViewButton.addEventListener("click", () => {
   const activeTab = openTabs.find(t => t.id === activeTabId);
-  if (activeTab?.content) {
-    showMarkdownContent(activeTab.content, activeTab.path);
+  if (activeTab?.renderedHtml) {
+    showCachedHtml(activeTab.renderedHtml);
+  } else if (activeTab?.content) {
+    showMarkdownContent(activeTab.content, activeTab.path, activeTab);
+  } else if (activeTab?.docId) {
+    loadTabContent(activeTab).catch(handleError);
+  }
+});
+
+pdfViewButton.addEventListener("click", () => {
+  const activeTab = openTabs.find(t => t.id === activeTabId);
+  if (activeTab?.pdfPath) {
+    showPdfContent(activeTab.pdfPath, activeTab.pdfPage);
+  } else {
+    updateStatus("PDF is not available for this tab.", "error");
   }
 });
 
@@ -1639,6 +2687,17 @@ modelSelect.addEventListener("change", () => {
 newSessionButton.addEventListener("click", () => {
   openChatListModal();
 });
+
+// Scroll tracking for markdown viewer
+const trackScrollDebounced = debounce(() => {
+  const activeTab = openTabs.find(t => t.id === activeTabId);
+  if (activeTab && activeTab.viewType !== "pdf") {
+    activeTab.scrollTop = markdownViewer.scrollTop ?? 0;
+    saveSessionStateDebounced();
+  }
+}, 200);
+
+markdownViewer.addEventListener("scroll", trackScrollDebounced);
 
 // Initialize
 attachResizeBehavior();

@@ -45,10 +45,28 @@ Session note: Cursor-backed create-session + stream tested successfully with `CU
 Refine as needed—not blocking core flow:
 
 - Keyboard shortcuts (e.g. close tab, cycle tabs).
-- Collapsible sidebar sections.
+- Collapsible sidebar sections (**partially done** in `apps/web`: Setup collapsible + scrollable nav + jobs-only-when-active; see **[TEMO_APP_WORKFLOW_IMPLEMENTATION_TASK.md](TEMO_APP_WORKFLOW_IMPLEMENTATION_TASK.md)** §0).
 - Unobtrusive **chat ↔ active document** context indicator.
 - Custom file-tree filter patterns (beyond hide images / hidden files).
 - Remove document from workspace, richer library UX—defer until workflow demands it.
+
+### Web reader — performance & stability (**active — 2026-05-12**)
+
+**User feedback:** Slightly better after recent passes (tab cache, optimistic doc switch, parallel workspace loads, scroll restore, background tab preload, image error placeholders, loading spinner) but **still slower than desired** and **somewhat glitchy**.
+
+**Known / suspected causes:**
+
+- **Missing assets:** If conversion used **ZIP + promote**, `images/` should exist when Marker included them; 404s often mean **fallback markdown-only path**, bad ZIP, or bad refs. Client still uses broken-`<img>` placeholder. Full story: **[TEMO_APP_WORKFLOW_IMPLEMENTATION_TASK.md](TEMO_APP_WORKFLOW_IMPLEMENTATION_TASK.md)** §0 (bundle ingest).
+- **Main-thread work:** Large MD → **`marked` + DOMPurify + big `innerHTML`** on activation path; no virtualization or worker offload yet.
+- **State timing:** Tab switch vs async `loadTabContent`, session debounce, and PDF vs MD paths can still race (source of “glitchy” if not fully eliminated).
+
+**Backlog items (next passes):**
+
+- Profile **first paint** vs **tab switch** (Network + Performance); confirm largest blocks (content fetch vs parse vs images).
+- **Offload or chunk** markdown parse/sanitize (Web Worker or idle-time split) without regressing “full doc in memory for active tab” requirement.
+- **Optional:** virtualized / incremental DOM for very large docs *after* correctness and snappy small/medium docs.
+- Revisit **preload** strategy (sequential vs parallel cap, cancel on close tab) to avoid background jank.
+- **Acceptance target:** sub‑100ms perceived tab switch when content is already loaded; predictable loading when not.
 
 ---
 
