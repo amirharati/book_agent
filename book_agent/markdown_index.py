@@ -9,7 +9,10 @@ Pipeline:
      progressive (forward-only) search with pre-built heading index.
      pdf_page is always derived from the matched line position, never from TOC pages.
   4. Build nested tree from depth (section number: 1→d1, 1.1→d2, 1.2.1→d3)
-  5. Also collect margin annotations (exercises, cross-refs) from meta as secondary items
+  5. After inversion repair: if a chapter's md_start_line still equals its first
+     child's, expand md_start_line to the **first line after** the `{N}----` marker
+     for that PDF page (not the marker line; depth-1 / Chapter|Part|Appendix only).
+  6. Also collect margin annotations (exercises, cross-refs) from meta as secondary items
 
 Key principle: sections are LINEAR and NON-OVERLAPPING.  end = next section at
 same-or-shallower depth.
@@ -26,7 +29,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 # Bump this when index schema or build logic changes; stale indices will be rebuilt on load.
-INDEX_VERSION = 1
+INDEX_VERSION = 6
 
 
 class TOCEnrichmentRequiredError(Exception):
@@ -1007,6 +1010,9 @@ def _find_heading_in_range(
                 return (line_1based, i + 1)
             if norm == h_norm:
                 return (line_1based, i + 1)
+            # TOC "INTRODUCTION Why This..." matches heading "INTRODUCTION" (prefix)
+            if h_core and norm_core.startswith(h_core + " ") and len(h_core) > 3:
+                return (line_1based, i + 1)
             if h_norm.startswith("part ") and norm == h_norm[5:].strip():
                 return (line_1based, i + 1)
             # Body "PART I" matches TOC "PART I Subtitle..." (prefix match)
@@ -1035,6 +1041,9 @@ def _find_heading_in_range(
         if norm_core_no_letter and h_core and norm_core_no_letter == h_core:
             return (i + 1, 0)
         if norm == h_norm:
+            return (i + 1, 0)
+        # TOC "INTRODUCTION Why This..." matches heading "INTRODUCTION" (prefix)
+        if h_core and norm_core.startswith(h_core + " ") and len(h_core) > 3:
             return (i + 1, 0)
         if h_norm.startswith("part ") and norm == h_norm[5:].strip():
             return (i + 1, 0)
@@ -1111,10 +1120,66 @@ def _title_matches_chapter(title_normalized: str, chapter_titles: list[str]) -> 
     return False
 
 
+# Pattern for section numbers like "1.1", "2.3.4", "A.1", "B.2.3", "Chapter 1", "Appendix A"
+# Must start with the pattern (no stray numbers before), and have meaningful content after
+SECTION_NUMBER_RE = re.compile(
+    r"^(?:"
+    r"\d+\.\d+(?:\.\d+)*\.?\s+[A-Z]"  # 1.1 Title, 1.2.3 Title (must have title starting with letter)
+    r"|\d+\s+[A-Z][a-z]"  # "1 Introduction" (single digit followed by capitalized word)
+    r"|[A-Z]\.\d+(?:\.\d+)*\s+[A-Z]"  # A.1 Title, B.2.3 Title
+    r"|(?:Chapter|Part|Appendix)\s+[\dIVXivx]+"  # Chapter 1, Appendix IV (but NOT "Section")
+    r")",
+    re.IGNORECASE
+)
+
+
+def _has_section_number(title: str) -> bool:
+    """Check if title starts with a section number pattern like 1.1 Title, Chapter 1."""
+    title = title.strip()
+    # Reject if starts with a bare number followed by another number (e.g., "66 1. INTRO" is page header noise)
+    if re.match(r"^\d+\s+\d+", title):
+        return False
+    # Reject anything starting with "Section" - these are cross-references, not headings
+    if re.match(r"^Section\s", title, re.IGNORECASE):
+        return False
+    # Reject "Chapter N" / "Appendix X" without any title (just a reference)
+    if re.match(r"^(?:Chapter|Appendix|Part)\s+[\dIVXivx]+\s*$", title, re.IGNORECASE):
+        return False
+    return bool(SECTION_NUMBER_RE.match(title))
+
+
+def _extract_section_depth_from_number(title: str) -> int | None:
+    """
+    Extract hierarchy depth from section number.
+    1 Intro -> depth 1, 1.1 -> depth 2, 1.2.3 -> depth 3, Chapter 1 -> depth 1, A.1 -> depth 2
+    """
+    title = title.strip()
+    # Match numeric patterns like 1.1, 2.3.4
+    m = re.match(r"^(\d+(?:\.\d+)+)", title)  # Must have at least one dot
+    if m:
+        parts = m.group(1).split(".")
+        return len(parts)
+    # Match single digit followed by word (chapter-level): "1 Introduction"
+    m = re.match(r"^(\d+)\s+[A-Z]", title)
+    if m:
+        return 1
+    # Match appendix patterns like A.1, B.2.3
+    m = re.match(r"^[A-Z]\.(\d+(?:\.\d+)*)", title)
+    if m:
+        return len(m.group(1).split(".")) + 1
+    # Chapter/Section/Part -> depth 1
+    if re.match(r"^(?:Chapter|Section|Part|Appendix)\s+[\dIVXivx]+", title, re.IGNORECASE):
+        return 1
+    return None
+
+
 def build_index_from_headings(lines: list[str]) -> list[dict]:
     """
     Build a section index purely from markdown headings (#–######).
     Use when TOC/meta pipeline yields broken ranges (e.g. missing pages / wrong line ranges).
+    
+    If headings have a clear numbering pattern (1.1, 1.2.3, etc.), filters to only include
+    numbered sections. Otherwise includes all headings.
     """
     content_start = _content_start_after_contents(lines)
     chapter_titles = _toc_chapter_titles_from_table(lines)
@@ -1127,7 +1192,8 @@ def build_index_from_headings(lines: list[str]) -> list[dict]:
             chapter_keys.add(k)
     pc = _build_page_cache(lines)
 
-    nodes = []
+    # First pass: collect all headings and check for numbering pattern
+    all_headings: list[tuple[int, int, str, int | None]] = []  # (line, level, title, pdf_page)
     for i, line in enumerate(lines, start=1):
         if i < content_start:
             continue
@@ -1143,6 +1209,22 @@ def build_index_from_headings(lines: list[str]) -> list[dict]:
             continue
         if title.startswith("[") and "](#" in title:
             continue
+        all_headings.append((i, level, title, pdf_page))
+    
+    # Check if significant portion have section numbers
+    numbered_count = sum(1 for _, _, t, _ in all_headings if _has_section_number(t))
+    use_numbered_filter = len(all_headings) > 10 and numbered_count >= 0.25 * len(all_headings)
+    
+    if use_numbered_filter:
+        log.info("Detected section numbering pattern (%d/%d headings). Filtering to numbered sections only.",
+                 numbered_count, len(all_headings))
+
+    nodes = []
+    for line_num, level, title, pdf_page in all_headings:
+        # If using numbered filter, skip non-numbered headings
+        if use_numbered_filter and not _has_section_number(title):
+            continue
+        
         title_key = _key_re.sub(" ", _normalize(title).lower()).strip()
         is_chapter = title_key in chapter_keys
         if not is_chapter:
@@ -1150,18 +1232,25 @@ def build_index_from_headings(lines: list[str]) -> list[dict]:
                 if len(title_key) >= 0.85 * len(ck) and (title_key == ck[:len(title_key)] or ck == title_key[:len(ck)]):
                     is_chapter = True
                     break
-        if is_chapter:
+        
+        # Determine depth: prefer section number depth, else markdown level, else chapter match
+        if use_numbered_filter:
+            depth = _extract_section_depth_from_number(title)
+            if depth is None:
+                depth = 1 if is_chapter else max(2, level - 2)
+        elif is_chapter:
             depth = 1
         else:
             min_level = 3
             depth = max(2, level - min_level + 2)
             depth = min(depth, 6)
+        
         node = {
             "id": _slug(title, len(nodes)),
             "title": title,
             "depth": depth,
-            "pdf_page": pdf_page if pdf_page is not None else _page_at_line(lines, i, pc),
-            "md_start_line": i,
+            "pdf_page": pdf_page if pdf_page is not None else _page_at_line(lines, line_num, pc),
+            "md_start_line": line_num,
             "_fallback_end": len(lines),
             "children": [],
         }
@@ -1180,6 +1269,93 @@ def build_index_from_headings(lines: list[str]) -> list[dict]:
     return nodes
 
 
+def _find_all_heading_candidates(
+    lines: list[str],
+    title: str,
+    range_start: int,
+    range_end: int,
+    head_index: list[tuple[int, str, str, str, str, str | None]] | None = None,
+    head_start_index: int = 0,
+) -> list[int]:
+    """
+    Find ALL markdown headings that match the title in the given range.
+    Returns list of line numbers (1-based).
+    """
+    candidates = []
+    norm = _normalize(title).lower()
+    norm_core = _strip_section_num(norm)
+    norm_core_no_letter = re.sub(r"^[a-z]\s+", "", norm_core) if len(norm_core) > 2 else norm_core
+    n_core_cn = _colon_norm(norm_core)
+    title_section_num = _section_num(title)
+    
+    if head_index:
+        lo = head_start_index
+        for i in range(lo, len(head_index)):
+            line_1based, h_raw, h_norm, h_core, h_core_no_part_cn, h_secnum = head_index[i]
+            if line_1based < range_start:
+                continue
+            if line_1based >= range_end:
+                break
+            if title_section_num and h_secnum and title_section_num != h_secnum:
+                continue
+            # Check all match conditions
+            matched = False
+            if norm_core and h_core and norm_core == h_core:
+                matched = True
+            elif n_core_cn and h_core_no_part_cn and n_core_cn == h_core_no_part_cn:
+                matched = True
+            elif norm_core_no_letter and h_core and norm_core_no_letter == h_core:
+                matched = True
+            elif norm == h_norm:
+                matched = True
+            elif h_core and norm_core.startswith(h_core + " ") and len(h_core) > 3:
+                matched = True
+            elif h_norm.startswith("part ") and norm == h_norm[5:].strip():
+                matched = True
+            elif h_norm.startswith("part ") and norm.startswith(h_norm):
+                matched = True
+            
+            if matched:
+                candidates.append(line_1based)
+        return candidates
+    
+    # Fallback without index
+    for i in range(range_start - 1, range_end):
+        line = lines[i]
+        m = HEADING_RE.match(line)
+        if not m:
+            continue
+        h_text = m.group(1).strip()
+        h_norm = _normalize(h_text).lower()
+        h_core = _strip_section_num(h_norm)
+        h_secnum = _section_num(h_text)
+        if title_section_num and h_secnum and title_section_num != h_secnum:
+            continue
+        h_core_no_part = h_core[5:].strip() if h_core.startswith("part ") else h_core
+        h_core_no_part_cn = _colon_norm(h_core_no_part)
+        
+        matched = False
+        if norm_core and h_core and norm_core == h_core:
+            matched = True
+        elif n_core_cn and h_core_no_part_cn and n_core_cn == h_core_no_part_cn:
+            matched = True
+        elif norm_core_no_letter and h_core and norm_core_no_letter == h_core:
+            matched = True
+        elif norm == h_norm:
+            matched = True
+        elif h_core and norm_core.startswith(h_core + " ") and len(h_core) > 3:
+            matched = True
+        elif h_norm.startswith("part ") and norm == h_norm[5:].strip():
+            matched = True
+        elif h_norm.startswith("part ") and norm.startswith(h_norm):
+            matched = True
+        
+        if matched:
+            candidates.append(i + 1)
+    
+    return candidates
+
+
 def _locate_heading(
     lines: list[str],
     title: str,
@@ -1191,12 +1367,14 @@ def _locate_heading(
 ) -> tuple[int | None, int]:
     """
     Find the markdown heading for a TOC title. Returns (match_line or None, next_head_start_index).
-    Search is progressive: only considers headings at or after search_after_line and from
-    head_start_index in the heading list.
+    When multiple candidates exist, picks the one closest to pdf_page hint.
+    Search is progressive: only considers headings at or after search_after_line.
     """
     range_start = max(1, search_after_line + 1)
     range_end = len(lines)
+    page_cache = _build_page_cache(lines) if page_markers else None
 
+    # First try narrow range near expected page
     if pdf_page is not None and page_markers:
         raw_starts = [
             page_markers[pg]
@@ -1216,18 +1394,77 @@ def _locate_heading(
         )
         if found is not None:
             return (found, next_i)
-        # Narrow range missed: try full-doc from original position (not next_i)
-        if _section_num(title):
-            return _find_heading_in_range(
-                lines, title, range_start, range_end,
-                head_index=head_index, head_start_index=head_start_index,
-            )
-        return (None, head_start_index)
-
-    return _find_heading_in_range(
+    
+    # Narrow range missed: find ALL candidates in full range and pick best
+    candidates = _find_all_heading_candidates(
         lines, title, range_start, range_end,
         head_index=head_index, head_start_index=head_start_index,
     )
+    
+    if not candidates:
+        return (None, head_start_index)
+    
+    if len(candidates) == 1:
+        # Only one match - use it
+        chosen = candidates[0]
+        next_i = head_start_index
+        if head_index:
+            for i in range(head_start_index, len(head_index)):
+                if head_index[i][0] > chosen:
+                    next_i = i
+                    break
+        return (chosen, next_i)
+    
+    # Multiple candidates: score by distance from expected page + title match quality
+    best = None
+    best_score = float('inf')
+    if len(candidates) > 1 and pdf_page:
+        # Debug: log all candidates when there are multiples
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"Multiple candidates for '{title}' (expected page {pdf_page}):")
+    
+    for cand_line in candidates:
+        cand_page = _page_at_line(lines, cand_line, page_cache) if page_cache else 0
+        
+        # Score = page distance (weighted heavily) + title complexity penalty
+        # Prefer candidates closer to expected page AND with simpler titles (less extra text)
+        if pdf_page and cand_page:
+            page_dist = abs(cand_page - pdf_page)
+            # Heavy penalty for being far from expected page
+            page_score = page_dist * 10
+        else:
+            # No page info - prefer earlier match
+            page_score = cand_line * 0.01
+        
+        # Title complexity: prefer shorter/simpler headings when they match
+        # (e.g. "CHAPTER 1" vs "CHAPTER 1: LIFE IS POKER...")
+        cand_heading_line = lines[cand_line - 1] if cand_line <= len(lines) else ""
+        cand_heading_text = HEADING_RE.match(cand_heading_line)
+        if cand_heading_text:
+            cand_title = cand_heading_text.group(1).strip()
+            # Penalize longer titles slightly (NOTES section has full verbose titles)
+            complexity_penalty = len(cand_title) * 0.01
+        else:
+            complexity_penalty = 0
+        
+        score = page_score + complexity_penalty
+        
+        if len(candidates) > 1 and pdf_page:
+            logger.info(f"  line {cand_line}: page {cand_page}, dist={page_dist if pdf_page and cand_page else 'N/A'}, score={score:.1f}")
+        
+        if score < best_score:
+            best_score = score
+            best = cand_line
+    
+    next_i = head_start_index
+    if head_index and best:
+        for i in range(head_start_index, len(head_index)):
+            if head_index[i][0] > best:
+                next_i = i
+                break
+    
+    return (best, next_i)
 
 # ---------------------------------------------------------------------------
 # Offset and Meta Page
@@ -1312,13 +1549,69 @@ def _meta_pdf_page_for(
 
     return None
 
-def _compute_offset(
+def _is_toc_page_numbers_corrupted(
+    toc_rows: list[tuple[str, int]],
+    meta_lookup: dict[str, int],
+) -> tuple[bool, str]:
+    """
+    Detect if TOC table page numbers are corrupted (e.g., from malformed markdown table).
+    
+    Corruption signals:
+    - Many distinct offsets (physical offset should be constant)
+    - Very low confidence (no dominant offset)
+    - Negative offsets or implausibly large variance
+    
+    Returns: (is_corrupted, reason)
+    """
+    candidates = []
+    for title, toc_page in toc_rows:
+        if toc_page <= 0:
+            continue
+        pdf_page = _meta_pdf_page_for_fast(title, meta_lookup)
+        if pdf_page:
+            candidates.append(pdf_page - toc_page)
+    
+    if len(candidates) < 5:
+        return (False, "")  # Not enough data to judge
+    
+    counts = Counter(candidates)
+    best_offset, best_count = counts.most_common(1)[0]
+    confidence = best_count / len(candidates)
+    n_distinct = len(counts)
+    
+    # Check for corruption signals
+    # 1. Too many distinct offsets relative to sample size
+    distinct_ratio = n_distinct / len(candidates)
+    if distinct_ratio > 0.3 and n_distinct > 10:
+        return (True, f"too many distinct offsets ({n_distinct} unique in {len(candidates)} samples, ratio={distinct_ratio:.2f})")
+    
+    # 2. Very low confidence AND many distinct values
+    if confidence < 0.35 and n_distinct > 8:
+        return (True, f"low confidence ({confidence:.0%}) with {n_distinct} distinct offsets")
+    
+    # 3. Check for wild variance (some offsets negative, some very large)
+    neg_count = sum(1 for o in candidates if o < 0)
+    large_count = sum(1 for o in candidates if o > 100)
+    if neg_count > 2 and large_count > 2:
+        return (True, f"mixed negative ({neg_count}) and large ({large_count}) offsets")
+    
+    return (False, "")
+
+
+def _compute_offset_with_confidence(
     toc_rows: list[tuple[str, int]],
     meta_lookup: dict[str, int],
     page_markers: dict[int, int],
     lines: list[str],
-) -> int | None:
-    """Find pdf_to_toc_offset using pre-built meta lookup, with heading fallback."""
+) -> tuple[int | None, float, str]:
+    """
+    Find pdf_to_toc_offset using pre-built meta lookup, with heading fallback.
+    
+    Returns: (offset, confidence, source)
+        - offset: the computed offset or None
+        - confidence: 0.0-1.0 (proportion of matches agreeing on this offset)
+        - source: "meta" | "headings" | "none"
+    """
     candidates = []
     for title, toc_page in toc_rows:
         if toc_page <= 0:
@@ -1329,11 +1622,15 @@ def _compute_offset(
 
     if candidates:
         counts = Counter(candidates)
-        return counts.most_common(1)[0][0]
+        best_offset, best_count = counts.most_common(1)[0]
+        confidence = best_count / len(candidates)
+        log.info("Offset %d from meta (confidence %.0f%%, %d/%d matches)",
+                 best_offset, confidence * 100, best_count, len(candidates))
+        return (best_offset, confidence, "meta")
 
     # Fallback: match TOC entries against body headings to derive offset
     if not page_markers:
-        return None
+        return (None, 0.0, "none")
     head_index = _build_heading_index(lines)
     page_cache = _build_page_cache(lines)
     for title, toc_page in toc_rows:
@@ -1348,10 +1645,23 @@ def _compute_offset(
                 candidates.append(pg_at - toc_page)
     if candidates:
         counts = Counter(candidates)
-        best = counts.most_common(1)[0][0]
-        log.info("Offset derived from heading matching: %d", best)
-        return best
-    return None
+        best_offset, best_count = counts.most_common(1)[0]
+        confidence = best_count / len(candidates)
+        log.info("Offset %d from heading matching (confidence %.0f%%, %d/%d matches)",
+                 best_offset, confidence * 100, best_count, len(candidates))
+        return (best_offset, confidence, "headings")
+    return (None, 0.0, "none")
+
+
+def _compute_offset(
+    toc_rows: list[tuple[str, int]],
+    meta_lookup: dict[str, int],
+    page_markers: dict[int, int],
+    lines: list[str],
+) -> int | None:
+    """Find pdf_to_toc_offset (backward-compat wrapper)."""
+    offset, _conf, _src = _compute_offset_with_confidence(toc_rows, meta_lookup, page_markers, lines)
+    return offset
 
 def _resolve_pdf_page(toc_page: int, offset: int | None) -> int | None:
     if toc_page == 0:
@@ -1460,6 +1770,154 @@ def _flatten_sections_for_check(sections: list[dict]) -> list[dict]:
         if node.get("children"):
             out.extend(_flatten_sections_for_check(node["children"]))
     return out
+
+
+def _detect_and_repair_inversions(chapters: list[dict], diag: list[str]) -> None:
+    """
+    Detect and repair parent-child inversions where parent comes AFTER its children
+    in line/page order. This happens when the wrong heading is matched (e.g. preface
+    description instead of real chapter).
+    
+    Two types of inversions:
+    1. Line inversion: parent.md_start_line > first_child.md_start_line
+    2. Page inversion: parent.pdf_page significantly < first_child.pdf_page (suggests
+       parent was matched to wrong location like a preface description)
+    
+    Repairs by moving parent to first child's location when inversion detected.
+    """
+    # Threshold: if parent page is more than this many pages BEFORE first child, 
+    # it's likely wrong (e.g. preface description)
+    PAGE_GAP_THRESHOLD = 3
+    
+    def repair_node(node: dict) -> None:
+        children = node.get("children")
+        if not children:
+            return
+        
+        # Recursively repair children first
+        for child in children:
+            repair_node(child)
+        
+        # Check for inversion: parent should come before first child
+        parent_line = node.get("md_start_line", 0)
+        parent_page = node.get("pdf_page") or 0
+        
+        first_child = min(children, key=lambda c: c.get("md_start_line", float("inf")))
+        child_line = first_child.get("md_start_line", float("inf"))
+        child_page = first_child.get("pdf_page") or 0
+        
+        # Detect inversions:
+        # 1. Line inversion: parent line > first child line
+        line_inversion = parent_line > child_line
+        # 2. Page inversion: parent is significantly BEFORE first child (wrong location)
+        #    E.g. parent at page 16 (preface), first child at page 23 (real chapter content)
+        page_inversion = (
+            parent_page > 0 and child_page > 0 and 
+            (child_page - parent_page) > PAGE_GAP_THRESHOLD
+        )
+        
+        if line_inversion or page_inversion:
+            title = node.get("title", "?")[:40]
+            old_line = parent_line
+            old_page = parent_page
+            reason = "line" if line_inversion else "page gap"
+            
+            # Move parent to first child's location
+            node["md_start_line"] = child_line
+            if child_page > 0:
+                node["pdf_page"] = child_page
+            node["_inversion_repaired"] = True
+            
+            diag.append(
+                f"INVERSION_REPAIR: '{title}' moved from line {old_line} (page {old_page}) "
+                f"to line {child_line} (page {child_page}) - {reason} inversion"
+            )
+            log.info(
+                "Inversion repair (%s): '%s' moved from line %d (page %d) to line %d (page %d)",
+                reason, title, old_line, old_page, child_line, child_page
+            )
+    
+    for chapter in chapters:
+        repair_node(chapter)
+
+
+def _expand_collapsed_parent_md_starts(
+    chapters: list[dict],
+    lines: list[str],
+    page_markers: dict[int, int],
+    page_cache: list[int],
+    diag: list[str],
+) -> None:
+    """
+    When a parent's md_start_line equals its first child's (common when the real
+    chapter title is an image / missing heading and the indexer or inversion repair
+    snaps the parent to the first Item heading), expand the parent's start backward
+    to the **first line after** the `{N}----` page marker for that section's start
+    PDF page (not the marker line itself), if it is nearby and the span stays on
+    the same opening page(s) as the child.
+    """
+    if not page_markers or not page_cache:
+        return
+    max_gap = min(200, max(30, len(lines) // 20))
+
+    def _major_section_for_marker_expand(title: str, depth: int | None) -> bool:
+        """True for top-level chapters/parts; false for Items and other deep headings."""
+        if depth == 1:
+            return True
+        t = (title or "").strip()
+        return bool(re.match(r"(?i)^(chapter|part|appendix)\b", t))
+
+    def visit(node: dict) -> None:
+        for c in node.get("children") or []:
+            visit(c)
+        kids = node.get("children")
+        if not kids:
+            return
+        if not _major_section_for_marker_expand(
+            str(node.get("title") or ""),
+            node.get("depth"),
+        ):
+            return
+        first_line = min(k.get("md_start_line", 10**9) for k in kids)
+        pl = node.get("md_start_line")
+        if pl is None or pl != first_line:
+            return
+        pages = [k.get("pdf_page") for k in kids if k.get("pdf_page")]
+        page = node.get("pdf_page") or (min(pages) if pages else 0)
+        if not page or page not in page_markers:
+            return
+        ml = page_markers[page]
+        if ml >= pl:
+            return
+        if pl - ml > max_gap:
+            return
+        new_start = ml + 1
+        if new_start >= pl or new_start > len(lines):
+            return
+        # Do not cross into a later PDF page before the first child (safety).
+        for li in range(new_start, pl):
+            pg = _page_at_line(lines, li, page_cache)
+            if pg and pg > page:
+                return
+
+        old = pl
+        node["md_start_line"] = new_start
+        node["_parent_start_from_marker"] = True
+        t = (node.get("title") or "")[:50]
+        diag.append(
+            f"PARENT_START_EXPAND: {t!r} md_start_line {old}→{new_start} (pdf_page {page}, line after marker {ml})"
+        )
+        log.info(
+            "Parent start expand: %r md_start_line %d→%d (page %d, after marker line %d)",
+            t,
+            old,
+            new_start,
+            page,
+            ml,
+        )
+
+    for ch in chapters:
+        visit(ch)
 
 
 def _all_starts_from_tree(nodes: list[dict]) -> list[int]:
@@ -1820,12 +2278,52 @@ def build_index(md_path: Path, meta_path: Path | None = None) -> dict:
     page_markers = _build_page_marker_index(lines)
     meta_lookup = _build_meta_page_lookup(meta_entries, layout)
 
+    # 2b. Check if TOC page numbers are corrupted (e.g., malformed markdown table from Marker)
+    # If corrupted, fall back to building index purely from headings
+    toc_corrupted = False
+    if toc_rows and not toc_from_meta:
+        toc_corrupted, corruption_reason = _is_toc_page_numbers_corrupted(toc_rows, meta_lookup)
+        if toc_corrupted:
+            log.warning("TOC page numbers appear corrupted: %s", corruption_reason)
+            log.info("Falling back to headings-based index")
+            nodes = build_index_from_headings(lines)
+            chapters = _build_tree(nodes)
+            _fix_md_end_lines_by_document_order(nodes)
+            page_count = max(page_markers.keys()) if page_markers else None
+            return {
+                "index_version": INDEX_VERSION,
+                "chapters": chapters,
+                "page_count": page_count,
+                "pdf_to_toc_offset": None,
+                "diagnostics": [f"TOC corrupted ({corruption_reason}), used headings fallback"],
+                "stats": {
+                    "toc_entries": len(toc_rows),
+                    "toc_corrupted": True,
+                    "corruption_reason": corruption_reason,
+                    "resolved_from_headings": len(nodes),
+                },
+            }
+
     # 3. Offset (for narrowing heading search window; final pdf_page is always
     #    derived from the matched line, never from the TOC page).
+    # Also compute confidence to validate matches later.
     if toc_from_meta:
         offset = 0
+        offset_confidence = 1.0
+        offset_source = "meta_toc"
     else:
-        offset = _compute_offset(toc_rows, meta_lookup, page_markers, lines)
+        offset, offset_confidence, offset_source = _compute_offset_with_confidence(
+            toc_rows, meta_lookup, page_markers, lines
+        )
+    
+    # Validation threshold: reject matches more than this many pages from expected
+    # Use a generous threshold since TOC page numbers can be wrong or misaligned
+    # Only apply validation when we have high confidence offset
+    PAGE_VALIDATION_THRESHOLD = 15
+    use_page_validation = offset is not None and offset_confidence >= 0.5 and page_markers
+    
+    # Track last resolved page to allow sequence-based validation as fallback
+    last_resolved_page = 0
 
     # 4. Resolve nodes: locate headings progressively, assign ranges
     nodes = []
@@ -1860,8 +2358,18 @@ def build_index(md_path: Path, meta_path: Path | None = None) -> dict:
         if pdf_page_hint is None:
             pdf_page_hint = _resolve_pdf_page(toc_page, offset)
 
+        # If expected page is before last resolved page, allow searching earlier
+        # (handles case where previous entry was wrongly matched late in document)
+        search_from = search_after_line
+        if pdf_page_hint and last_resolved_page and pdf_page_hint < last_resolved_page:
+            # Reset to page marker for expected page, or 0 if no marker
+            if pdf_page_hint in page_markers:
+                search_from = max(0, page_markers[pdf_page_hint] - 10)
+            else:
+                search_from = 0
+
         md_start, head_start_index = _locate_heading(
-            lines, title, pdf_page_hint, page_markers, search_after_line,
+            lines, title, pdf_page_hint, page_markers, search_from,
             head_index=head_index, head_start_index=head_start_index,
         )
         if md_start is None and pdf_page_hint is not None and pdf_page_hint in page_markers:
@@ -1887,26 +2395,68 @@ def build_index(md_path: Path, meta_path: Path | None = None) -> dict:
                 diag.append(f"OUT_OF_ORDER: {title} found at {md_start} (before search_after={search_after_line})")
 
         if md_start:
-            search_after_line = md_start
             # Always derive pdf_page from the actual matched line, never from the TOC.
             pdf_page = _page_at_line(lines, md_start, page_cache) if page_markers else None
+            
+            # Validate: if we have high-confidence offset, check if found page is near expected
+            # Use toc_page + offset if available; fallback to meta page_id for entries without toc_page
+            expected_page = None
+            if toc_page > 0:
+                expected_page = _resolve_pdf_page(toc_page, offset)
+            else:
+                # No toc_page - try to get expected page from meta (for entries like chapters 
+                # where detailed TOC has no page number but meta has correct page_id)
+                meta_page = _meta_pdf_page_for_fast(title, meta_lookup)
+                if meta_page:
+                    expected_page = meta_page
+            
+            match_rejected = False
+            if use_page_validation and pdf_page and expected_page:
+                page_diff = abs(pdf_page - expected_page)
+                if page_diff > PAGE_VALIDATION_THRESHOLD:
+                    # Match is far from expected - check if it's in proper sequence
+                    # If found page > last_resolved_page, the match might be correct even if
+                    # the TOC page is wrong (e.g. typo in printed page number)
+                    # Must be STRICTLY greater (not equal) to avoid accepting duplicates
+                    in_sequence = pdf_page > last_resolved_page
+                    if not in_sequence:
+                        # Match is too far from expected AND out of sequence - reject
+                        diag.append(
+                            f"REJECTED: '{title[:40]}' found at page {pdf_page}, "
+                            f"expected ~{expected_page} (diff={page_diff})"
+                        )
+                        match_rejected = True
+                        md_start = None  # Reject this match
+                    else:
+                        # Far from expected but in sequence - warn but accept
+                        diag.append(
+                            f"WARNING: '{title[:40]}' at page {pdf_page}, expected ~{expected_page} "
+                            f"(diff={page_diff}) - accepted (in sequence after page {last_resolved_page})"
+                        )
+            
+            if md_start and not match_rejected:
+                search_after_line = md_start
+                # Update last resolved page for sequence validation
+                if pdf_page and pdf_page > last_resolved_page:
+                    last_resolved_page = pdf_page
 
-            depth = depth_from_llm
-            if depth is None:
-                depth = _heading_level_at_line(lines, md_start)
-            if depth is not None:
-                depth = max(1, min(6, depth))
-            node = {
-                "id": _slug(title, len(nodes)),
-                "title": title,
-                "pdf_page": pdf_page,
-                "md_start_line": md_start,
-                "_fallback_end": len(lines),
-            }
-            if depth is not None:
-                node["depth"] = depth
-            nodes.append(node)
-        else:
+                depth = depth_from_llm
+                if depth is None:
+                    depth = _heading_level_at_line(lines, md_start)
+                if depth is not None:
+                    depth = max(1, min(6, depth))
+                node = {
+                    "id": _slug(title, len(nodes)),
+                    "title": title,
+                    "pdf_page": pdf_page,
+                    "md_start_line": md_start,
+                    "_fallback_end": len(lines),
+                }
+                if depth is not None:
+                    node["depth"] = depth
+                nodes.append(node)
+        
+        if md_start is None:
             diag.append(f"UNRESOLVED: {title}")
             
     # 5. Nesting
@@ -1948,6 +2498,14 @@ def build_index(md_path: Path, meta_path: Path | None = None) -> dict:
 
     chapters = _build_tree(nodes)
     _fix_inverted_in_tree(chapters, len(lines))
+    
+    # Detect and repair parent-child inversions (parent at line > first child line)
+    _detect_and_repair_inversions(chapters, diag)
+    # Chapter/parent snapped to first child: widen md_start to page marker when safe
+    if page_markers and page_cache:
+        _expand_collapsed_parent_md_starts(
+            chapters, lines, page_markers, page_cache, diag
+        )
 
     # Recompute pdf_page_end from current md_end_line after tree fixes, then propagate (keeps higher-level pages robust)
     if page_markers:
@@ -2010,14 +2568,65 @@ def build_index(md_path: Path, meta_path: Path | None = None) -> dict:
 
     annotations = _collect_annotations(meta_entries, layout)
 
-    flat_count = len(_flatten_sections_for_check(chapters))
+    # Phase 5: Post-build verification
+    flat_sections = _flatten_sections_for_check(chapters)
+    flat_count = len(flat_sections)
+    
+    # Count issues
+    rejected_count = sum(1 for d in diag if d.startswith("REJECTED:"))
+    unresolved_count = sum(1 for d in diag if d.startswith("UNRESOLVED:"))
+    repaired_count = sum(1 for d in diag if d.startswith("INVERSION_REPAIR:"))
+    
+    # Verify monotonicity of md_start_line
+    starts = [s["md_start_line"] for s in flat_sections]
+    non_monotonic = []
+    for i in range(1, len(starts)):
+        if starts[i] < starts[i-1]:
+            non_monotonic.append((i, starts[i-1], starts[i]))
+    if non_monotonic:
+        diag.append(f"WARNING: {len(non_monotonic)} non-monotonic start lines detected")
+    
+    # Verify top-level chapters are in ascending PDF page order
+    page_order_issues = []
+    for i in range(1, len(chapters)):
+        prev_page = chapters[i-1].get("pdf_page") or 0
+        curr_page = chapters[i].get("pdf_page") or 0
+        if prev_page > 0 and curr_page > 0 and prev_page > curr_page:
+            prev_title = (chapters[i-1].get("title") or "")[:40]
+            curr_title = (chapters[i].get("title") or "")[:40]
+            page_order_issues.append((prev_title, prev_page, curr_title, curr_page))
+            diag.append(
+                f"PAGE_ORDER_ERROR: '{prev_title}' (page {prev_page}) comes before "
+                f"'{curr_title}' (page {curr_page}) but has higher page number"
+            )
+            log.warning(
+                "Page order issue: '%s' (page %d) before '%s' (page %d)",
+                prev_title, prev_page, curr_title, curr_page
+            )
+    
+    # Stats summary
+    stats = {
+        "toc_entries": n_entries,
+        "resolved": flat_count,
+        "rejected": rejected_count,
+        "unresolved": unresolved_count,
+        "inversions_repaired": repaired_count,
+        "page_order_errors": len(page_order_issues),
+    }
+    
     log.info("Index built: %d sections, %d top-level chapters", flat_count, len(chapters))
+    if rejected_count > 0 or unresolved_count > 0 or repaired_count > 0 or page_order_issues:
+        log.info("  Stats: %d rejected, %d unresolved, %d inversions repaired, %d page order errors",
+                 rejected_count, unresolved_count, repaired_count, len(page_order_issues))
 
     return {
         "index_version": INDEX_VERSION,
         "chapters": chapters,
         "page_count": len(page_markers),
         "pdf_to_toc_offset": offset,
+        "offset_confidence": round(offset_confidence, 2) if offset is not None else None,
+        "offset_source": offset_source if offset is not None else None,
+        "stats": stats,
         "annotations": annotations,
         "diagnostics": diag,
     }
