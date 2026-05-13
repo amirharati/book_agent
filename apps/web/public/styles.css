@@ -1209,6 +1209,15 @@ textarea:focus-visible {
   background: var(--color-bg-hover);
 }
 
+.btn-danger {
+  background: #7f1d1d;
+  color: #fee2e2;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: #991b1b;
+}
+
 .btn-ghost {
   background: transparent;
   color: var(--color-text-secondary);

@@ -68,11 +68,25 @@
               <div class="setup-group">
                 <div class="setup-row">
                   <label class="setup-label">Workspace</label>
-                  <button id="createWorkspaceButton" type="button" class="btn btn-ghost btn-icon btn-sm" title="New workspace">
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-                      <path d="M8 3v10M3 8h10"/>
-                    </svg>
-                  </button>
+                  <div class="section-actions">
+                    <button id="openTrashButton" type="button" class="btn btn-ghost btn-icon btn-sm" title="Trash">
+                      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M2.5 4.5h11v8a1 1 0 01-1 1h-9a1 1 0 01-1-1v-8z"/>
+                        <path d="M5.5 4.5V3a1 1 0 011-1h3a1 1 0 011 1v1.5"/>
+                        <path d="M8 8V12"/>
+                      </svg>
+                    </button>
+                    <button id="deleteWorkspaceButton" type="button" class="btn btn-ghost btn-icon btn-sm" title="Delete workspace">
+                      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M3 4h10M6 4V2h4v2M5 4l.5 9h5L11 4"/>
+                      </svg>
+                    </button>
+                    <button id="createWorkspaceButton" type="button" class="btn btn-ghost btn-icon btn-sm" title="New workspace">
+                      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M8 3v10M3 8h10"/>
+                      </svg>
+                    </button>
+                  </div>
                 </div>
                 <select id="workspaceSelect" class="select select-sm"></select>
                 <button id="openWorkspaceButton" type="button" class="btn btn-secondary btn-sm btn-full">Open</button>
@@ -84,11 +98,25 @@
           <section class="sidebar-section documents-section">
             <div class="section-header">
               <h2 class="section-title">Documents</h2>
-              <button id="addDocumentButton" type="button" class="btn btn-ghost btn-icon btn-sm" title="Add document" disabled>
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-                  <path d="M8 3v10M3 8h10"/>
-                </svg>
-              </button>
+              <div class="section-actions">
+                <button id="openDocumentTrashButton" type="button" class="btn btn-ghost btn-icon btn-sm" title="Document trash" disabled>
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M2.5 4.5h11v8a1 1 0 01-1 1h-9a1 1 0 01-1-1v-8z"/>
+                    <path d="M5.5 4.5V3a1 1 0 011-1h3a1 1 0 011 1v1.5"/>
+                    <path d="M8 8V12"/>
+                  </svg>
+                </button>
+                <button id="deleteDocumentButton" type="button" class="btn btn-ghost btn-icon btn-sm" title="Delete current document" disabled>
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M3 4h10M6 4V2h4v2M5 4l.5 9h5L11 4"/>
+                  </svg>
+                </button>
+                <button id="addDocumentButton" type="button" class="btn btn-ghost btn-icon btn-sm" title="Add document" disabled>
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M8 3v10M3 8h10"/>
+                  </svg>
+                </button>
+              </div>
             </div>
             <div class="document-list" id="documentList">
               <p class="empty-hint">Open a workspace</p>
@@ -431,8 +459,55 @@
       </section>
     </div>
 
+    <div class="modal-backdrop hidden" id="trashModal" role="dialog" aria-modal="true">
+      <section class="modal modal-lg">
+        <header class="modal-header">
+          <h2 class="modal-title">Trash</h2>
+          <button id="closeTrashModalButton" type="button" class="btn btn-ghost btn-icon" aria-label="Close">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M4 4l8 8M12 4l-8 8"/>
+            </svg>
+          </button>
+        </header>
+        <div class="modal-body">
+          <h3 class="label">Workspace Trash</h3>
+          <div id="workspaceTrashList" class="chat-list">
+            <p class="empty-hint">No deleted workspaces.</p>
+          </div>
+          <h3 class="label" style="margin-top: var(--space-3);">Document Trash (current workspace)</h3>
+          <div id="documentTrashList" class="chat-list">
+            <p class="empty-hint">No deleted documents.</p>
+          </div>
+        </div>
+        <footer class="modal-footer">
+          <button id="closeTrashModalFooterButton" type="button" class="btn btn-secondary">Close</button>
+        </footer>
+      </section>
+    </div>
+
+    <div class="modal-backdrop hidden" id="deleteConfirmModal" role="dialog" aria-modal="true">
+      <section class="modal">
+        <header class="modal-header">
+          <h2 class="modal-title" id="deleteConfirmTitle">Delete</h2>
+          <button id="closeDeleteConfirmModalButton" type="button" class="btn btn-ghost btn-icon" aria-label="Close">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M4 4l8 8M12 4l-8 8"/>
+            </svg>
+          </button>
+        </header>
+        <div class="modal-body">
+          <p class="path-display" id="deleteConfirmMessage"></p>
+        </div>
+        <footer class="modal-footer">
+          <button id="deleteConfirmCancelButton" type="button" class="btn btn-secondary">Cancel</button>
+          <button id="deleteConfirmSoftButton" type="button" class="btn btn-primary">Move to Trash</button>
+          <button id="deleteConfirmHardButton" type="button" class="btn btn-danger">Delete Permanently</button>
+        </footer>
+      </section>
+    </div>
+
     <script src="/web_modules/katex/dist/katex.min.js"></script>
     <script src="/web_modules/marked-katex-extension/lib/index.umd.js"></script>
-    <script type="module" src="/app.js?v=31"></script>
+    <script type="module" src="/app.js?v=33"></script>
   </body>
 </html>

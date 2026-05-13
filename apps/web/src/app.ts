@@ -36,6 +36,8 @@ const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".sv
 const BOOK_AGENT_CONFIG_NAME = ".book_agent.json";
 const BOOK_WORKSPACE_STATE_NAME = ".book_workspace.json";
 const PROJECT_METADATA_NAME = "project.json";
+const ROOT_TRASH_DIR_NAME = ".trash";
+const ROOT_TRASH_INDEX_NAME = "index.json";
 const DEFAULT_MARKER_SERVER_URL = "http://127.0.0.1:8001";
 const DEFAULT_MARKER_SUBMIT_OPTIONS: MarkerSubmitOptions = {
   output_format: "markdown",
@@ -89,6 +91,25 @@ interface ProjectMetadata {
   project_name: string;
   created_at: string;
   documents: ProjectDocumentState[];
+  deletedDocuments?: Array<{
+    id: string;
+    name: string;
+    trashId: string;
+    deletedAt: string;
+  }>;
+}
+
+interface TrashIndexItem {
+  id: string;
+  type: "workspace" | "document";
+  workspaceId: string;
+  docId?: string;
+  name: string;
+  originalPath: string;
+  trashPath: string;
+  deletedAt: string;
+  status: "trashed" | "restored" | "purged";
+  metadata?: Record<string, unknown>;
 }
 
 interface ConversionSettings {
@@ -567,6 +588,7 @@ export function createApp({ backend, backendName, workspaceRoot = process.cwd() 
         project_name: body.name.trim(),
         created_at: new Date().toISOString(),
         documents: [],
+        deletedDocuments: [],
       });
 
       const config = await readBookAgentConfig(runtimeConfig.workspaceRoot);
@@ -593,6 +615,154 @@ export function createApp({ backend, backendName, workspaceRoot = process.cwd() 
         return;
       }
       res.json(payload);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete("/api/workspaces/:workspaceId", async (req, res, next) => {
+    try {
+      const workspaceId = req.params.workspaceId;
+      const mode = req.query.mode === "hard" ? "hard" : "soft";
+      const workspaceDir = path.join(runtimeConfig.workspaceRoot, workspaceId);
+      const state = await readBookWorkspaceState(workspaceDir);
+      if (!state) {
+        res.status(404).json({ error: "Workspace not found." });
+        return;
+      }
+
+      let trashId: string | null = null;
+      if (mode === "soft") {
+        trashId = createTrashId("ws");
+        const trashPath = path.join(getRootTrashDir(runtimeConfig.workspaceRoot), "workspaces", `${workspaceId}-${trashId}`);
+        await movePathIfExists(workspaceDir, trashPath);
+        await appendTrashIndexItem(runtimeConfig.workspaceRoot, {
+          id: trashId,
+          type: "workspace",
+          workspaceId,
+          name: workspaceId,
+          originalPath: workspaceDir,
+          trashPath,
+          deletedAt: new Date().toISOString(),
+          status: "trashed",
+        });
+      } else {
+        await fs.rm(workspaceDir, { recursive: true, force: true });
+      }
+
+      const config = await readBookAgentConfig(runtimeConfig.workspaceRoot);
+      if (config.current_workspace === workspaceId) {
+        config.current_workspace = null;
+      }
+      removeConfigDocumentPathsForWorkspace(config, workspaceDir);
+      await writeBookAgentConfig(runtimeConfig.workspaceRoot, config);
+
+      const rootState = await readRootState(runtimeConfig.workspaceRoot);
+      rootState.workspaceOrder = rootState.workspaceOrder.filter((id) => id !== workspaceId);
+      if (rootState.lastWorkspaceId === workspaceId) {
+        rootState.lastWorkspaceId = null;
+      }
+      await writeRootState(runtimeConfig.workspaceRoot, rootState);
+
+      res.json({
+        success: true,
+        mode,
+        trashId,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/trash/workspaces", async (_req, res, next) => {
+    try {
+      const index = await readTrashIndex(runtimeConfig.workspaceRoot);
+      const workspaces = index
+        .filter((item) => item.type === "workspace" && item.status === "trashed")
+        .sort((a, b) => (b.deletedAt || "").localeCompare(a.deletedAt || ""));
+      res.json({ workspaces });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/trash/workspaces/:trashId/restore", async (req, res, next) => {
+    try {
+      const trashId = req.params.trashId;
+      const index = await readTrashIndex(runtimeConfig.workspaceRoot);
+      const item = index.find((entry) => entry.id === trashId && entry.type === "workspace" && entry.status === "trashed");
+      if (!item) {
+        res.status(404).json({ error: "Workspace trash item not found." });
+        return;
+      }
+      let restoreId = item.workspaceId;
+      let targetDir = path.join(runtimeConfig.workspaceRoot, restoreId);
+      let suffix = 2;
+      while (await pathExists(targetDir)) {
+        restoreId = `${item.workspaceId}-${suffix}`;
+        targetDir = path.join(runtimeConfig.workspaceRoot, restoreId);
+        suffix += 1;
+      }
+      await movePathIfExists(item.trashPath, targetDir);
+      item.status = "restored";
+      await writeTrashIndex(runtimeConfig.workspaceRoot, index);
+
+      const config = await readBookAgentConfig(runtimeConfig.workspaceRoot);
+      const restoredState = await readBookWorkspaceState(targetDir);
+      const restoredMetadata = await readProjectMetadata(targetDir);
+      if (restoredState && restoredMetadata) {
+        const oldWorkspaceDir = item.originalPath;
+        if (restoreId !== item.workspaceId) {
+          for (const doc of restoredMetadata.documents) {
+            doc.sourceDir = remapPathPrefix(doc.sourceDir, oldWorkspaceDir, targetDir) ?? doc.sourceDir;
+            doc.currentDir = remapPathPrefix(doc.currentDir, oldWorkspaceDir, targetDir);
+            doc.mdPath = remapPathPrefix(doc.mdPath, oldWorkspaceDir, targetDir) ?? doc.mdPath;
+            doc.pdfPath = remapPathPrefix(doc.pdfPath, oldWorkspaceDir, targetDir);
+            doc.localSourcePath = remapPathPrefix(doc.localSourcePath, oldWorkspaceDir, targetDir);
+          }
+          await writeProjectMetadata(targetDir, {
+            ...restoredMetadata,
+            project_id: restoreId,
+          });
+        }
+        for (const docId of restoredState.documents) {
+          const doc = restoredMetadata.documents.find((entry) => entry.id === docId);
+          const currentDir = doc?.currentDir ?? path.join(targetDir, "documents", docId, "current");
+          config.documents[docId] = currentDir;
+        }
+      }
+      if (!config.current_workspace) {
+        config.current_workspace = restoreId;
+      }
+      await writeBookAgentConfig(runtimeConfig.workspaceRoot, config);
+
+      const rootState = await readRootState(runtimeConfig.workspaceRoot);
+      rootState.workspaceOrder = [restoreId, ...rootState.workspaceOrder.filter((id) => id !== restoreId)];
+      if (!rootState.lastWorkspaceId) {
+        rootState.lastWorkspaceId = restoreId;
+      }
+      await writeRootState(runtimeConfig.workspaceRoot, rootState);
+
+      const payload = await buildCanonicalWorkspaceResponse(runtimeConfig.workspaceRoot, restoreId, config);
+      res.json({ success: true, workspace: payload, restoredWorkspaceId: restoreId });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete("/api/trash/workspaces/:trashId", async (req, res, next) => {
+    try {
+      const trashId = req.params.trashId;
+      const index = await readTrashIndex(runtimeConfig.workspaceRoot);
+      const item = index.find((entry) => entry.id === trashId && entry.type === "workspace");
+      if (!item || item.status !== "trashed") {
+        res.status(404).json({ error: "Workspace trash item not found." });
+        return;
+      }
+      await fs.rm(item.trashPath, { recursive: true, force: true });
+      item.status = "purged";
+      await writeTrashIndex(runtimeConfig.workspaceRoot, index);
+      res.json({ success: true, purged: true });
     } catch (error) {
       next(error);
     }
@@ -954,6 +1124,7 @@ export function createApp({ backend, backendName, workspaceRoot = process.cwd() 
         project_name: workspaceId,
         created_at: new Date().toISOString(),
         documents: [],
+        deletedDocuments: [],
       };
       metadata.documents = metadata.documents.filter((doc) => doc.id !== documentId);
       metadata.documents.push({
@@ -971,6 +1142,223 @@ export function createApp({ backend, backendName, workspaceRoot = process.cwd() 
       await writeProjectMetadata(workspaceDir, metadata);
 
       res.status(201).json(await buildCanonicalWorkspaceResponse(runtimeConfig.workspaceRoot, workspaceId, config));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete("/api/workspaces/:workspaceId/documents/:documentId", async (req, res, next) => {
+    try {
+      const workspaceId = req.params.workspaceId;
+      const documentId = req.params.documentId;
+      const mode = req.query.mode === "hard" ? "hard" : "soft";
+      const workspaceDir = path.join(runtimeConfig.workspaceRoot, workspaceId);
+      const state = await readBookWorkspaceState(workspaceDir);
+      if (!state) {
+        res.status(404).json({ error: "Workspace not found." });
+        return;
+      }
+      if (!state.documents.includes(documentId)) {
+        res.status(404).json({ error: "Document not found in workspace." });
+        return;
+      }
+      const metadata = (await readProjectMetadata(workspaceDir)) ?? {
+        project_id: workspaceId,
+        project_name: workspaceId,
+        created_at: new Date().toISOString(),
+        documents: [],
+        deletedDocuments: [],
+      };
+      const doc = metadata.documents.find((entry) => entry.id === documentId);
+      if (!doc) {
+        res.status(404).json({ error: "Document metadata not found." });
+        return;
+      }
+      const inputsDir = path.join(workspaceDir, "inputs", documentId);
+      const documentsDir = path.join(workspaceDir, "documents", documentId);
+      let trashId: string | null = null;
+
+      if (mode === "soft") {
+        trashId = createTrashId("doc");
+        const trashRoot = getRootTrashDir(runtimeConfig.workspaceRoot);
+        const trashDocPath = path.join(trashRoot, "documents", workspaceId, `${documentId}-${trashId}`);
+        await fs.mkdir(trashDocPath, { recursive: true });
+        await movePathIfExists(inputsDir, path.join(trashDocPath, "inputs"));
+        await movePathIfExists(documentsDir, path.join(trashDocPath, "documents"));
+        await appendTrashIndexItem(runtimeConfig.workspaceRoot, {
+          id: trashId,
+          type: "document",
+          workspaceId,
+          docId: documentId,
+          name: doc.name,
+          originalPath: documentsDir,
+          trashPath: trashDocPath,
+          deletedAt: new Date().toISOString(),
+          status: "trashed",
+          metadata: {
+            document: doc,
+            oldInputsDir: inputsDir,
+            oldDocumentsDir: documentsDir,
+          },
+        });
+        metadata.deletedDocuments = Array.isArray(metadata.deletedDocuments) ? metadata.deletedDocuments : [];
+        metadata.deletedDocuments.push({
+          id: documentId,
+          name: doc.name,
+          trashId,
+          deletedAt: new Date().toISOString(),
+        });
+      } else {
+        await fs.rm(inputsDir, { recursive: true, force: true });
+        await fs.rm(documentsDir, { recursive: true, force: true });
+      }
+
+      state.documents = state.documents.filter((id) => id !== documentId);
+      if (state.current_document === documentId) {
+        state.current_document = state.documents[0] ?? null;
+      }
+      await writeBookWorkspaceState(workspaceDir, state);
+
+      const config = await readBookAgentConfig(runtimeConfig.workspaceRoot);
+      delete config.documents[documentId];
+      if (config.current_workspace === workspaceId && !state.current_document) {
+        config.current_workspace = workspaceId;
+      }
+      await writeBookAgentConfig(runtimeConfig.workspaceRoot, config);
+
+      metadata.documents = metadata.documents.filter((entry) => entry.id !== documentId);
+      await writeProjectMetadata(workspaceDir, metadata);
+
+      const refreshed = await buildCanonicalWorkspaceResponse(runtimeConfig.workspaceRoot, workspaceId, config);
+      res.json({
+        success: true,
+        mode,
+        trashId,
+        workspace: refreshed,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/workspaces/:workspaceId/trash/documents", async (req, res, next) => {
+    try {
+      const workspaceId = req.params.workspaceId;
+      const workspaceDir = path.join(runtimeConfig.workspaceRoot, workspaceId);
+      const state = await readBookWorkspaceState(workspaceDir);
+      if (!state) {
+        res.status(404).json({ error: "Workspace not found." });
+        return;
+      }
+      const index = await readTrashIndex(runtimeConfig.workspaceRoot);
+      const documents = index
+        .filter((item) => item.type === "document" && item.workspaceId === workspaceId && item.status === "trashed")
+        .sort((a, b) => (b.deletedAt || "").localeCompare(a.deletedAt || ""));
+      res.json({ documents });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/workspaces/:workspaceId/trash/documents/:trashId/restore", async (req, res, next) => {
+    try {
+      const workspaceId = req.params.workspaceId;
+      const trashId = req.params.trashId;
+      const workspaceDir = path.join(runtimeConfig.workspaceRoot, workspaceId);
+      const state = await readBookWorkspaceState(workspaceDir);
+      if (!state) {
+        res.status(404).json({ error: "Workspace not found." });
+        return;
+      }
+      const index = await readTrashIndex(runtimeConfig.workspaceRoot);
+      const item = index.find((entry) => entry.id === trashId && entry.type === "document" && entry.workspaceId === workspaceId && entry.status === "trashed");
+      if (!item) {
+        res.status(404).json({ error: "Document trash item not found." });
+        return;
+      }
+
+      const baseDocId = slugify(item.docId ?? item.name) || `doc-${Date.now().toString(36)}`;
+      let restoredDocId = baseDocId;
+      let suffix = 2;
+      while (state.documents.includes(restoredDocId)) {
+        restoredDocId = `${baseDocId}-${suffix}`;
+        suffix += 1;
+      }
+      const targetInputsDir = path.join(workspaceDir, "inputs", restoredDocId);
+      const targetDocumentsDir = path.join(workspaceDir, "documents", restoredDocId);
+      await fs.mkdir(path.dirname(targetInputsDir), { recursive: true });
+      await fs.mkdir(path.dirname(targetDocumentsDir), { recursive: true });
+      await movePathIfExists(path.join(item.trashPath, "inputs"), targetInputsDir);
+      await movePathIfExists(path.join(item.trashPath, "documents"), targetDocumentsDir);
+      await fs.rm(item.trashPath, { recursive: true, force: true });
+
+      const config = await readBookAgentConfig(runtimeConfig.workspaceRoot);
+      const metadata = (await readProjectMetadata(workspaceDir)) ?? {
+        project_id: workspaceId,
+        project_name: workspaceId,
+        created_at: new Date().toISOString(),
+        documents: [],
+        deletedDocuments: [],
+      };
+      const snapshot = (item.metadata?.document ?? {}) as Partial<ProjectDocumentState>;
+      const oldInputsDir = typeof item.metadata?.oldInputsDir === "string" ? item.metadata.oldInputsDir : "";
+      const oldDocumentsDir = typeof item.metadata?.oldDocumentsDir === "string" ? item.metadata.oldDocumentsDir : "";
+      const currentDir = path.join(targetDocumentsDir, "current");
+      const restored: ProjectDocumentState = {
+        id: restoredDocId,
+        name: typeof snapshot.name === "string" ? snapshot.name : item.name,
+        sourcePath: typeof snapshot.sourcePath === "string" ? snapshot.sourcePath : item.originalPath,
+        localSourcePath: remapPathPrefix(typeof snapshot.localSourcePath === "string" ? snapshot.localSourcePath : undefined, oldInputsDir, targetInputsDir),
+        sourceDir: remapPathPrefix(typeof snapshot.sourceDir === "string" ? snapshot.sourceDir : path.join(targetInputsDir, "source"), oldInputsDir, targetInputsDir) ?? path.join(targetInputsDir, "source"),
+        currentDir: remapPathPrefix(typeof snapshot.currentDir === "string" ? snapshot.currentDir : currentDir, oldDocumentsDir, targetDocumentsDir),
+        mdPath: remapPathPrefix(typeof snapshot.mdPath === "string" ? snapshot.mdPath : "", oldDocumentsDir, targetDocumentsDir) || "",
+        pdfPath: remapPathPrefix(typeof snapshot.pdfPath === "string" ? snapshot.pdfPath : undefined, oldDocumentsDir, targetDocumentsDir),
+        sourceKind: snapshot.sourceKind === "pdf" ? "pdf" : "markdown",
+        addedAt: typeof snapshot.addedAt === "string" ? snapshot.addedAt : new Date().toISOString(),
+      };
+      if (!restored.mdPath) {
+        restored.mdPath = await resolvePrimaryMarkdownPath(restored.currentDir ?? currentDir).catch(() => "");
+      }
+      metadata.documents = metadata.documents.filter((entry) => entry.id !== restoredDocId);
+      metadata.documents.push(restored);
+      metadata.deletedDocuments = (metadata.deletedDocuments ?? []).filter((entry) => entry.trashId !== trashId);
+      await writeProjectMetadata(workspaceDir, metadata);
+
+      config.documents[restoredDocId] = restored.currentDir ?? currentDir;
+      await writeBookAgentConfig(runtimeConfig.workspaceRoot, config);
+
+      if (!state.documents.includes(restoredDocId)) {
+        state.documents.push(restoredDocId);
+      }
+      if (!state.current_document) {
+        state.current_document = restoredDocId;
+      }
+      await writeBookWorkspaceState(workspaceDir, state);
+
+      item.status = "restored";
+      await writeTrashIndex(runtimeConfig.workspaceRoot, index);
+
+      const refreshed = await buildCanonicalWorkspaceResponse(runtimeConfig.workspaceRoot, workspaceId, config);
+      res.json({ success: true, workspace: refreshed, restoredDocumentId: restoredDocId });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete("/api/workspaces/:workspaceId/trash/documents/:trashId", async (req, res, next) => {
+    try {
+      const workspaceId = req.params.workspaceId;
+      const trashId = req.params.trashId;
+      const index = await readTrashIndex(runtimeConfig.workspaceRoot);
+      const item = index.find((entry) => entry.id === trashId && entry.type === "document" && entry.workspaceId === workspaceId && entry.status === "trashed");
+      if (!item) {
+        res.status(404).json({ error: "Document trash item not found." });
+        return;
+      }
+      await fs.rm(item.trashPath, { recursive: true, force: true });
+      item.status = "purged";
+      await writeTrashIndex(runtimeConfig.workspaceRoot, index);
+      res.json({ success: true, purged: true });
     } catch (error) {
       next(error);
     }
@@ -1952,6 +2340,20 @@ async function readProjectMetadata(workspaceDir: string): Promise<ProjectMetadat
               sourceKind: entry.sourceKind === "pdf" ? "pdf" : "markdown",
             }))
         : [],
+      deletedDocuments: Array.isArray(parsed.deletedDocuments)
+        ? parsed.deletedDocuments
+            .filter((entry): entry is { id: string; name: string; trashId: string; deletedAt: string } =>
+              typeof entry === "object"
+              && entry !== null
+              && typeof (entry as { id?: unknown }).id === "string"
+              && typeof (entry as { trashId?: unknown }).trashId === "string")
+            .map((entry) => ({
+              id: entry.id,
+              name: typeof entry.name === "string" ? entry.name : entry.id,
+              trashId: entry.trashId,
+              deletedAt: typeof entry.deletedAt === "string" ? entry.deletedAt : new Date().toISOString(),
+            }))
+        : [],
     };
   } catch {
     console.warn(`[persistence] invalid ${PROJECT_METADATA_NAME} at ${workspaceDir}; using fallback metadata`);
@@ -1962,6 +2364,99 @@ async function readProjectMetadata(workspaceDir: string): Promise<ProjectMetadat
 async function writeProjectMetadata(workspaceDir: string, metadata: ProjectMetadata): Promise<void> {
   const metadataPath = path.join(workspaceDir, PROJECT_METADATA_NAME);
   await writeJsonAtomic(metadataPath, metadata);
+}
+
+function getRootTrashDir(workspaceRoot: string): string {
+  return path.join(workspaceRoot, ROOT_TRASH_DIR_NAME);
+}
+
+function getRootTrashIndexPath(workspaceRoot: string): string {
+  return path.join(getRootTrashDir(workspaceRoot), ROOT_TRASH_INDEX_NAME);
+}
+
+async function readTrashIndex(workspaceRoot: string): Promise<TrashIndexItem[]> {
+  const indexPath = getRootTrashIndexPath(workspaceRoot);
+  const raw = await fs.readFile(indexPath, "utf8").catch(() => "");
+  if (!raw.trim()) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(raw) as { items?: unknown };
+    const items = Array.isArray((parsed as { items?: unknown[] }).items)
+      ? (parsed as { items: unknown[] }).items
+      : [];
+    return items
+      .filter((entry): entry is TrashIndexItem =>
+        typeof entry === "object"
+        && entry !== null
+        && typeof (entry as { id?: unknown }).id === "string"
+        && ((entry as { type?: unknown }).type === "workspace" || (entry as { type?: unknown }).type === "document"))
+      .map((entry) => ({
+        ...entry,
+        status: (entry as { status?: unknown }).status === "restored"
+          ? "restored"
+          : (entry as { status?: unknown }).status === "purged"
+            ? "purged"
+            : "trashed",
+      }));
+  } catch {
+    return [];
+  }
+}
+
+async function writeTrashIndex(workspaceRoot: string, items: TrashIndexItem[]): Promise<void> {
+  const trashDir = getRootTrashDir(workspaceRoot);
+  await fs.mkdir(trashDir, { recursive: true });
+  await writeJsonAtomic(getRootTrashIndexPath(workspaceRoot), { items });
+}
+
+async function appendTrashIndexItem(workspaceRoot: string, item: TrashIndexItem): Promise<void> {
+  const items = await readTrashIndex(workspaceRoot);
+  items.push(item);
+  await writeTrashIndex(workspaceRoot, items);
+}
+
+function createTrashId(prefix: "ws" | "doc"): string {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+async function pathExists(targetPath: string): Promise<boolean> {
+  return Boolean(await fs.stat(targetPath).catch(() => null));
+}
+
+async function movePathIfExists(sourcePath: string, targetPath: string): Promise<void> {
+  if (!(await pathExists(sourcePath))) return;
+  await fs.mkdir(path.dirname(targetPath), { recursive: true });
+  try {
+    await fs.rename(sourcePath, targetPath);
+  } catch {
+    await fs.cp(sourcePath, targetPath, { recursive: true, force: true });
+    await fs.rm(sourcePath, { recursive: true, force: true });
+  }
+}
+
+function removeConfigDocumentPathsForWorkspace(config: BookAgentConfig, workspaceDir: string): void {
+  const normalizedWorkspaceDir = path.resolve(workspaceDir);
+  for (const [docId, docPath] of Object.entries(config.documents)) {
+    const normalizedDocPath = path.resolve(docPath);
+    if (normalizedDocPath === normalizedWorkspaceDir || normalizedDocPath.startsWith(`${normalizedWorkspaceDir}${path.sep}`)) {
+      delete config.documents[docId];
+    }
+  }
+}
+
+function remapPathPrefix(value: string | undefined, oldPrefix: string, newPrefix: string): string | undefined {
+  if (!value || !oldPrefix) return value;
+  const normalizedValue = path.resolve(value);
+  const normalizedOld = path.resolve(oldPrefix);
+  if (normalizedValue === normalizedOld) {
+    return newPrefix;
+  }
+  if (normalizedValue.startsWith(`${normalizedOld}${path.sep}`)) {
+    const suffix = normalizedValue.slice(normalizedOld.length + 1);
+    return path.join(newPrefix, suffix);
+  }
+  return value;
 }
 
 async function listCanonicalWorkspaces(root: string, config: BookAgentConfig) {

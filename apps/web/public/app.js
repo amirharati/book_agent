@@ -19,8 +19,12 @@ const workspaceRootInput = document.querySelector("#workspaceRootInput");
 const pickWorkspaceRootButton = document.querySelector("#pickWorkspaceRootButton");
 const workspaceSelect = document.querySelector("#workspaceSelect");
 const createWorkspaceButton = document.querySelector("#createWorkspaceButton");
+const deleteWorkspaceButton = document.querySelector("#deleteWorkspaceButton");
+const openTrashButton = document.querySelector("#openTrashButton");
 const openWorkspaceButton = document.querySelector("#openWorkspaceButton");
 const addDocumentButton = document.querySelector("#addDocumentButton");
+const deleteDocumentButton = document.querySelector("#deleteDocumentButton");
+const openDocumentTrashButton = document.querySelector("#openDocumentTrashButton");
 const documentList = document.querySelector("#documentList");
 const setupStatus = document.querySelector("#setupStatus");
 const workspaceChip = document.querySelector("#workspaceChip");
@@ -121,6 +125,18 @@ const jobDetailsModal = document.querySelector("#jobDetailsModal");
 const closeJobDetailsModalButton = document.querySelector("#closeJobDetailsModalButton");
 const closeJobDetailsFooterButton = document.querySelector("#closeJobDetailsFooterButton");
 const jobDetailsBody = document.querySelector("#jobDetailsBody");
+const trashModal = document.querySelector("#trashModal");
+const workspaceTrashList = document.querySelector("#workspaceTrashList");
+const documentTrashList = document.querySelector("#documentTrashList");
+const closeTrashModalButton = document.querySelector("#closeTrashModalButton");
+const closeTrashModalFooterButton = document.querySelector("#closeTrashModalFooterButton");
+const deleteConfirmModal = document.querySelector("#deleteConfirmModal");
+const deleteConfirmTitle = document.querySelector("#deleteConfirmTitle");
+const deleteConfirmMessage = document.querySelector("#deleteConfirmMessage");
+const closeDeleteConfirmModalButton = document.querySelector("#closeDeleteConfirmModalButton");
+const deleteConfirmCancelButton = document.querySelector("#deleteConfirmCancelButton");
+const deleteConfirmSoftButton = document.querySelector("#deleteConfirmSoftButton");
+const deleteConfirmHardButton = document.querySelector("#deleteConfirmHardButton");
 
 // DOM References - File Tree
 const fileTree = document.querySelector("#fileTree");
@@ -151,6 +167,7 @@ let jobsPollTimer = null;
 let workspaceJobs = [];
 let conversionTargetDocument = null;
 let jobsPollFailureCount = 0;
+let deleteConfirmAction = null;
 
 const DEFAULT_MARKER_OPTIONS = {
   output_format: "markdown",
@@ -1684,6 +1701,7 @@ function renderDocumentList() {
   documentList.innerHTML = "";
   
   const documents = currentWorkspace?.documents ?? [];
+  const activeDocument = getCurrentWorkspaceDocument();
   
   if (!currentWorkspace || documents.length === 0) {
     const empty = document.createElement("p");
@@ -1691,10 +1709,14 @@ function renderDocumentList() {
     empty.textContent = currentWorkspace ? "No documents added yet" : "Open a workspace to see documents";
     documentList.appendChild(empty);
     addDocumentButton.disabled = !currentWorkspace;
+    deleteDocumentButton.disabled = true;
+    openDocumentTrashButton.disabled = !currentWorkspace;
     return;
   }
   
   addDocumentButton.disabled = false;
+  openDocumentTrashButton.disabled = false;
+  deleteDocumentButton.disabled = !activeDocument;
   
   for (const doc of documents) {
     const item = document.createElement("button");
@@ -1705,7 +1727,7 @@ function renderDocumentList() {
     }
     
     const convertButton = (doc.pdfPath)
-      ? `<button class="btn btn-ghost btn-icon doc-convert-btn" title="Convert PDF to markdown">⚙</button>`
+      ? `<button class="btn btn-ghost btn-icon btn-sm doc-convert-btn" title="Convert PDF to markdown">⚙</button>`
       : "";
     item.innerHTML = `
       <svg class="document-item-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -1723,13 +1745,129 @@ function renderDocumentList() {
         openConversionModalForDocument(doc);
       });
     }
-    
     item.addEventListener("click", () => {
       setCurrentAndOpenDocument(doc).catch(handleError);
     });
     
     documentList.appendChild(item);
   }
+}
+
+function getCurrentWorkspaceDocument() {
+  if (!currentWorkspace) return null;
+  const documents = currentWorkspace.documents ?? [];
+  if (!documents.length) return null;
+  const activeId = currentWorkspace.currentDocumentId;
+  if (activeId) {
+    const match = documents.find((doc) => doc.id === activeId);
+    if (match) return match;
+  }
+  return documents[0] ?? null;
+}
+
+function openDeleteConfirmModal(options) {
+  deleteConfirmAction = options ?? null;
+  deleteConfirmTitle.textContent = options?.title ?? "Delete";
+  deleteConfirmMessage.textContent = options?.message ?? "Choose how you want to proceed.";
+  if (options?.softLabel && typeof options.onSoft === "function") {
+    deleteConfirmSoftButton.classList.remove("hidden");
+    deleteConfirmSoftButton.textContent = options.softLabel;
+  } else {
+    deleteConfirmSoftButton.classList.add("hidden");
+  }
+  deleteConfirmHardButton.textContent = options?.hardLabel ?? "Delete Permanently";
+  deleteConfirmModal.classList.remove("hidden");
+}
+
+function closeDeleteConfirmModal() {
+  deleteConfirmModal.classList.add("hidden");
+  deleteConfirmAction = null;
+}
+
+async function runDeleteAction(mode) {
+  const action = deleteConfirmAction;
+  const handler = mode === "soft" ? action?.onSoft : action?.onHard;
+  if (typeof handler !== "function") return;
+  try {
+    await handler();
+    closeDeleteConfirmModal();
+  } catch (error) {
+    handleError(error);
+  }
+}
+
+async function deleteDocument(doc, mode) {
+  if (!currentWorkspace || !doc?.id) return;
+  await apiRequest(`/api/workspaces/${encodeURIComponent(currentWorkspace.id)}/documents/${encodeURIComponent(doc.id)}?mode=${encodeURIComponent(mode)}`, {
+    method: "DELETE",
+  });
+  if (mode === "soft") {
+    updateStatus(`Moved document to trash: ${doc.name}`);
+  } else {
+    updateStatus(`Deleted document permanently: ${doc.name}`);
+  }
+  openTabs = openTabs.filter((tab) => tab.docId !== doc.id);
+  if (activeTabId && !openTabs.some((tab) => tab.id === activeTabId)) {
+    activeTabId = openTabs[0]?.id ?? null;
+    if (activeTabId) {
+      activateTab(activeTabId);
+    } else {
+      showPlaceholder();
+    }
+  }
+  await refreshWorkspaceList();
+  await loadWorkspaceFiles();
+  await loadWorkspaceJobs();
+}
+
+function promptDeleteDocument(doc) {
+  if (!doc) return;
+  openDeleteConfirmModal({
+    title: "Delete Document",
+    message: `Choose delete mode for "${doc.name}". Move to Trash keeps it restorable. Permanent delete cannot be undone.`,
+    softLabel: "Move to Trash",
+    hardLabel: "Delete Permanently",
+    onSoft: () => deleteDocument(doc, "soft"),
+    onHard: () => deleteDocument(doc, "hard"),
+  });
+}
+
+function promptDeleteCurrentDocument() {
+  promptDeleteDocument(getCurrentWorkspaceDocument());
+}
+
+async function deleteCurrentWorkspace(mode) {
+  if (!currentWorkspace) return;
+  const workspaceName = currentWorkspace.name;
+  await apiRequest(`/api/workspaces/${encodeURIComponent(currentWorkspace.id)}?mode=${encodeURIComponent(mode)}`, { method: "DELETE" });
+  if (mode === "soft") {
+    updateStatus(`Moved workspace to trash: ${workspaceName}`);
+  } else {
+    updateStatus(`Deleted workspace permanently: ${workspaceName}`);
+  }
+  currentWorkspace = null;
+  openTabs = [];
+  activeTabId = null;
+  lastRenderedTabIds = "";
+  renderTabs();
+  showPlaceholder();
+  await refreshWorkspaceList();
+  await loadWorkspaceFiles();
+  renderJobs([]);
+  clearChatSessionState("Open a workspace to start");
+}
+
+function promptDeleteCurrentWorkspace() {
+  if (!currentWorkspace) return;
+  const workspaceName = currentWorkspace.name;
+  openDeleteConfirmModal({
+    title: "Delete Workspace",
+    message: `Choose delete mode for workspace "${workspaceName}". Move to Trash keeps it restorable. Permanent delete cannot be undone.`,
+    softLabel: "Move to Trash",
+    hardLabel: "Delete Permanently",
+    onSoft: () => deleteCurrentWorkspace("soft"),
+    onHard: () => deleteCurrentWorkspace("hard"),
+  });
 }
 
 async function setCurrentAndOpenDocument(doc) {
@@ -1958,6 +2096,121 @@ function openJobDetailsModal(job) {
 
 function closeJobDetailsModal() {
   jobDetailsModal.classList.add("hidden");
+}
+
+async function openTrashModal() {
+  await renderTrashModal();
+  trashModal.classList.remove("hidden");
+}
+
+function closeTrashModal() {
+  trashModal.classList.add("hidden");
+}
+
+async function renderTrashModal() {
+  const [workspaceTrashPayload, documentTrashPayload] = await Promise.all([
+    apiRequest("/api/trash/workspaces").catch(() => ({ workspaces: [] })),
+    currentWorkspace
+      ? apiRequest(`/api/workspaces/${encodeURIComponent(currentWorkspace.id)}/trash/documents`).catch(() => ({ documents: [] }))
+      : Promise.resolve({ documents: [] }),
+  ]);
+  const workspaceItems = Array.isArray(workspaceTrashPayload.workspaces) ? workspaceTrashPayload.workspaces : [];
+  const documentItems = Array.isArray(documentTrashPayload.documents) ? documentTrashPayload.documents : [];
+
+  workspaceTrashList.innerHTML = "";
+  if (workspaceItems.length === 0) {
+    workspaceTrashList.innerHTML = `<p class="empty-hint">No deleted workspaces.</p>`;
+  } else {
+    for (const item of workspaceItems) {
+      const row = document.createElement("article");
+      row.className = "chat-list-item";
+      row.innerHTML = `
+        <div class="chat-list-title">${item.workspaceId}</div>
+        <div class="chat-list-meta">Deleted ${new Date(item.deletedAt).toLocaleString()}</div>
+      `;
+      const actions = document.createElement("div");
+      actions.className = "job-item-actions";
+      const restoreBtn = document.createElement("button");
+      restoreBtn.type = "button";
+      restoreBtn.className = "btn btn-primary btn-sm";
+      restoreBtn.textContent = "Restore";
+      restoreBtn.addEventListener("click", async () => {
+        await apiRequest(`/api/trash/workspaces/${encodeURIComponent(item.id)}/restore`, { method: "POST" });
+        await refreshWorkspaceList();
+        await renderTrashModal();
+      });
+      const purgeBtn = document.createElement("button");
+      purgeBtn.type = "button";
+      purgeBtn.className = "btn btn-ghost btn-sm";
+      purgeBtn.textContent = "Delete Permanently";
+      purgeBtn.addEventListener("click", async () => {
+        openDeleteConfirmModal({
+          title: "Permanently Delete Workspace",
+          message: `Delete "${item.workspaceId}" from trash permanently? This cannot be undone.`,
+          hardLabel: "Delete Permanently",
+          onHard: async () => {
+            await apiRequest(`/api/trash/workspaces/${encodeURIComponent(item.id)}`, { method: "DELETE" });
+            await renderTrashModal();
+          },
+        });
+      });
+      actions.appendChild(restoreBtn);
+      actions.appendChild(purgeBtn);
+      row.appendChild(actions);
+      workspaceTrashList.appendChild(row);
+    }
+  }
+
+  documentTrashList.innerHTML = "";
+  if (documentItems.length === 0) {
+    documentTrashList.innerHTML = `<p class="empty-hint">${currentWorkspace ? "No deleted documents." : "Open a workspace to view document trash."}</p>`;
+  } else {
+    for (const item of documentItems) {
+      const row = document.createElement("article");
+      row.className = "chat-list-item";
+      row.innerHTML = `
+        <div class="chat-list-title">${item.name}</div>
+        <div class="chat-list-meta">Deleted ${new Date(item.deletedAt).toLocaleString()}</div>
+      `;
+      const actions = document.createElement("div");
+      actions.className = "job-item-actions";
+      const restoreBtn = document.createElement("button");
+      restoreBtn.type = "button";
+      restoreBtn.className = "btn btn-primary btn-sm";
+      restoreBtn.textContent = "Restore";
+      restoreBtn.addEventListener("click", async () => {
+        if (!currentWorkspace) return;
+        await apiRequest(`/api/workspaces/${encodeURIComponent(currentWorkspace.id)}/trash/documents/${encodeURIComponent(item.id)}/restore`, {
+          method: "POST",
+        });
+        await refreshWorkspaceList();
+        await loadWorkspaceFiles();
+        await renderTrashModal();
+      });
+      const purgeBtn = document.createElement("button");
+      purgeBtn.type = "button";
+      purgeBtn.className = "btn btn-ghost btn-sm";
+      purgeBtn.textContent = "Delete Permanently";
+      purgeBtn.addEventListener("click", async () => {
+        if (!currentWorkspace) return;
+        openDeleteConfirmModal({
+          title: "Permanently Delete Document",
+          message: `Delete "${item.name}" from trash permanently? This cannot be undone.`,
+          hardLabel: "Delete Permanently",
+          onHard: async () => {
+            await apiRequest(`/api/workspaces/${encodeURIComponent(currentWorkspace.id)}/trash/documents/${encodeURIComponent(item.id)}`, {
+              method: "DELETE",
+            });
+            await renderTrashModal();
+          },
+        });
+      });
+      actions.appendChild(restoreBtn);
+      actions.appendChild(purgeBtn);
+      row.appendChild(actions);
+      documentTrashList.appendChild(row);
+    }
+  }
 }
 
 function renderJobs(jobs) {
@@ -2742,6 +2995,10 @@ composer.addEventListener("submit", async (event) => {
 // Sidebar events
 pickWorkspaceRootButton.addEventListener("click", () => openModal("pick-workspace-root", "Select Workspace Root", workspaceRootInput.value));
 createWorkspaceButton.addEventListener("click", openCreateWorkspaceModal);
+deleteWorkspaceButton.addEventListener("click", promptDeleteCurrentWorkspace);
+openTrashButton.addEventListener("click", () => openTrashModal().catch(handleError));
+openDocumentTrashButton.addEventListener("click", () => openTrashModal().catch(handleError));
+deleteDocumentButton.addEventListener("click", promptDeleteCurrentDocument);
 
 toggleSetupSection.addEventListener("click", () => {
   const expanded = toggleSetupSection.getAttribute("aria-expanded") === "true";
@@ -2826,6 +3083,18 @@ closeJobDetailsModalButton.addEventListener("click", closeJobDetailsModal);
 closeJobDetailsFooterButton.addEventListener("click", closeJobDetailsModal);
 jobDetailsModal.addEventListener("click", (event) => {
   if (event.target === jobDetailsModal) closeJobDetailsModal();
+});
+closeTrashModalButton.addEventListener("click", closeTrashModal);
+closeTrashModalFooterButton.addEventListener("click", closeTrashModal);
+trashModal.addEventListener("click", (event) => {
+  if (event.target === trashModal) closeTrashModal();
+});
+closeDeleteConfirmModalButton.addEventListener("click", closeDeleteConfirmModal);
+deleteConfirmCancelButton.addEventListener("click", closeDeleteConfirmModal);
+deleteConfirmSoftButton.addEventListener("click", () => runDeleteAction("soft"));
+deleteConfirmHardButton.addEventListener("click", () => runDeleteAction("hard"));
+deleteConfirmModal.addEventListener("click", (event) => {
+  if (event.target === deleteConfirmModal) closeDeleteConfirmModal();
 });
 createWorkspaceModal.addEventListener("click", (event) => {
   if (event.target === createWorkspaceModal) closeCreateWorkspaceModalFn();
