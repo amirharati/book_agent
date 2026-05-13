@@ -730,6 +730,9 @@ function hydrateWorkspaceSessionState(sessionState, activeConversationPayload = 
           viewType: tab.viewType ?? "markdown",
           content: null,
           renderedHtml: null,
+          windowHtml: null,
+          chunkState: null,
+          renderToken: 0,
           loadFailed: false,
           isExternal: Boolean(tab.isExternal),
           scrollTop: tab.scrollTop ?? 0,
@@ -773,6 +776,9 @@ function hydrateWorkspaceSessionState(sessionState, activeConversationPayload = 
 // Markdown Rendering
 const CHUNK_THRESHOLD_LINES = 500;
 const CHUNK_SIZE_LINES = 200;
+const ACTIVE_WINDOW_RADIUS = 2;
+const INACTIVE_WINDOW_RADIUS = 1;
+const BACKGROUND_CHUNKS_PER_TICK = 2;
 
 function renderMarkdownToHtml(markdownSource) {
   try {
@@ -820,6 +826,131 @@ function estimateChunkForScroll(chunks, scrollTop, totalHeight) {
   if (chunks.length <= 1 || totalHeight <= 0) return 0;
   const ratio = Math.min(1, Math.max(0, scrollTop / totalHeight));
   return Math.floor(ratio * chunks.length);
+}
+
+function cancelTabBackgroundRender(tab) {
+  tab.renderToken = (tab.renderToken ?? 0) + 1;
+}
+
+function invalidateTabRenderCache(tab) {
+  cancelTabBackgroundRender(tab);
+  tab.renderedHtml = null;
+  tab.windowHtml = null;
+  tab.chunkState = null;
+}
+
+function ensureChunkState(tab) {
+  if (!tab?.content) return null;
+  if (tab.chunkState?.source === tab.content) {
+    return tab.chunkState;
+  }
+  const chunks = splitMarkdownIntoChunks(tab.content);
+  tab.chunkState = {
+    source: tab.content,
+    chunks,
+    htmlChunks: new Array(chunks.length).fill(null),
+  };
+  return tab.chunkState;
+}
+
+function estimateChunkIndexForTab(tab, state) {
+  if (!state || state.chunks.length <= 1) return 0;
+  const estimatedTotalHeight = state.chunks.length * 700;
+  return estimateChunkForScroll(state.chunks, tab.scrollTop ?? 0, estimatedTotalHeight);
+}
+
+function chunkPriorityOrder(total, centerIdx) {
+  const order = [centerIdx];
+  for (let i = 1; i < total; i++) {
+    if (centerIdx - i >= 0) order.push(centerIdx - i);
+    if (centerIdx + i < total) order.push(centerIdx + i);
+  }
+  return order;
+}
+
+function renderChunkHtml(state, idx) {
+  if (state.htmlChunks[idx] !== null) {
+    return state.htmlChunks[idx];
+  }
+  const html = renderMarkdownToHtml(state.chunks[idx].content);
+  state.htmlChunks[idx] = html;
+  return html;
+}
+
+function buildWindowHtml(tab, filePath, radius) {
+  const state = ensureChunkState(tab);
+  if (!state) return { html: "", centerIdx: 0 };
+  const centerIdx = estimateChunkIndexForTab(tab, state);
+  const start = Math.max(0, centerIdx - radius);
+  const end = Math.min(state.chunks.length - 1, centerIdx + radius);
+  const parts = [];
+  for (let idx = start; idx <= end; idx++) {
+    parts.push(`<section data-chunk-idx="${idx}">${renderChunkHtml(state, idx)}</section>`);
+  }
+  return { html: parts.join(""), centerIdx };
+}
+
+function pruneTabToWindow(tab, radius = INACTIVE_WINDOW_RADIUS) {
+  if (!tab?.content || tab.viewType === "pdf" || tab.loadFailed) return;
+  const state = ensureChunkState(tab);
+  if (!state) return;
+  const centerIdx = estimateChunkIndexForTab(tab, state);
+  const start = Math.max(0, centerIdx - radius);
+  const end = Math.min(state.chunks.length - 1, centerIdx + radius);
+  for (let idx = 0; idx < state.htmlChunks.length; idx++) {
+    if (idx < start || idx > end) {
+      state.htmlChunks[idx] = null;
+    }
+  }
+  tab.renderedHtml = null;
+  tab.windowHtml = buildWindowHtml(tab, tab.path, radius).html;
+  cancelTabBackgroundRender(tab);
+}
+
+function startBackgroundRender(tab, filePath, centerIdx) {
+  const state = ensureChunkState(tab);
+  if (!state) return;
+  const token = (tab.renderToken ?? 0) + 1;
+  tab.renderToken = token;
+  const order = chunkPriorityOrder(state.chunks.length, centerIdx);
+  let pointer = 0;
+
+  const step = () => {
+    if ((tab.renderToken ?? 0) !== token) return;
+    let renderedThisTick = 0;
+    while (pointer < order.length && renderedThisTick < BACKGROUND_CHUNKS_PER_TICK) {
+      const idx = order[pointer++];
+      if (state.htmlChunks[idx] === null) {
+        renderChunkHtml(state, idx);
+        renderedThisTick += 1;
+      }
+    }
+    if (pointer < order.length) {
+      window.setTimeout(step, 0);
+      return;
+    }
+
+    if (activeTabId === tab.id && tab.viewType !== "pdf") {
+      const currentScroll = markdownViewer.scrollTop ?? 0;
+      markdownViewer.innerHTML = state.htmlChunks
+        .map((chunkHtml, idx) => `<section data-chunk-idx="${idx}">${chunkHtml ?? ""}</section>`)
+        .join("");
+      rewriteRelativeAssets(markdownViewer, filePath);
+      tab.renderedHtml = markdownViewer.innerHTML;
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          markdownViewer.scrollTop = currentScroll;
+        });
+      });
+      for (const otherTab of openTabs) {
+        if (otherTab.id !== tab.id) {
+          pruneTabToWindow(otherTab, INACTIVE_WINDOW_RADIUS);
+        }
+      }
+    }
+  };
+
+  window.setTimeout(step, 0);
 }
 
 function isAbsoluteUrl(value) {
@@ -882,6 +1013,9 @@ function createTab(doc) {
     viewType: preferPdf ? "pdf" : (hasMarkdown ? "markdown" : (hasPdf ? "pdf" : "markdown")),
     content: null,
     renderedHtml: null,
+    windowHtml: null,
+    chunkState: null,
+    renderToken: 0,
     loadFailed: false,
     isExternal: false,
     scrollTop: 0,
@@ -966,8 +1100,15 @@ function renderTabs() {
 function activateTab(tabId) {
   const tab = openTabs.find(t => t.id === tabId);
   if (!tab) return;
-  
+
+  const previousActiveTabId = activeTabId;
   saveCurrentTabPosition();
+  if (previousActiveTabId && previousActiveTabId !== tabId) {
+    const previousTab = openTabs.find((entry) => entry.id === previousActiveTabId);
+    if (previousTab) {
+      pruneTabToWindow(previousTab, INACTIVE_WINDOW_RADIUS);
+    }
+  }
   
   activeTabId = tabId;
   renderTabs();
@@ -980,10 +1121,20 @@ function activateTab(tabId) {
   }
   
   if (tab.renderedHtml) {
-    showCachedHtml(tab.renderedHtml, tab.scrollTop);
+    showCachedHtml(tab.renderedHtml, tab.scrollTop, tab.path);
     return;
   }
-  
+
+  if (tab.windowHtml) {
+    showCachedHtml(tab.windowHtml, tab.scrollTop, tab.path);
+    if (tab.content !== null) {
+      const state = ensureChunkState(tab);
+      const centerIdx = estimateChunkIndexForTab(tab, state);
+      startBackgroundRender(tab, tab.path, centerIdx);
+    }
+    return;
+  }
+
   if (tab.content !== null) {
     showMarkdownContent(tab.content, tab.path, tab);
     return;
@@ -1014,7 +1165,8 @@ function showLoadingState() {
 function closeTab(tabId) {
   const idx = openTabs.findIndex(t => t.id === tabId);
   if (idx === -1) return;
-  
+
+  cancelTabBackgroundRender(openTabs[idx]);
   openTabs.splice(idx, 1);
   
   if (activeTabId === tabId) {
@@ -1164,20 +1316,29 @@ function showMarkdownContent(content, filePath, tabToCache = null) {
   viewerPlaceholder.classList.add("hidden");
   pdfViewer.classList.add("hidden");
   markdownViewer.classList.remove("hidden");
-  
-  const html = renderMarkdownToHtml(content);
-  markdownViewer.innerHTML = html;
-  rewriteRelativeAssets(markdownViewer, filePath);
-  
-  if (tabToCache) {
-    tabToCache.renderedHtml = markdownViewer.innerHTML;
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        markdownViewer.scrollTop = tabToCache.scrollTop ?? 0;
-      });
-    });
+
+  if (!tabToCache) {
+    const html = renderMarkdownToHtml(content);
+    markdownViewer.innerHTML = html;
+    rewriteRelativeAssets(markdownViewer, filePath);
+  } else {
+    tabToCache.content = content;
+    const { html, centerIdx } = buildWindowHtml(tabToCache, filePath, ACTIVE_WINDOW_RADIUS);
+    markdownViewer.innerHTML = html;
+    rewriteRelativeAssets(markdownViewer, filePath);
+    tabToCache.windowHtml = markdownViewer.innerHTML;
+    tabToCache.renderedHtml = null;
+    startBackgroundRender(tabToCache, filePath, centerIdx);
   }
-  
+
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      if (tabToCache) {
+        markdownViewer.scrollTop = tabToCache.scrollTop ?? 0;
+      }
+    });
+  });
+
   markdownViewButton.classList.add("active");
   pdfViewButton.classList.remove("active");
   saveSessionStateDebounced();
@@ -1262,11 +1423,14 @@ function renderChunkedMarkdown(chunks, filePath, tabToCache = null) {
   requestAnimationFrame(renderNextChunk);
 }
 
-function showCachedHtml(html, scrollTop = 0) {
+function showCachedHtml(html, scrollTop = 0, filePath = null) {
   viewerPlaceholder.classList.add("hidden");
   pdfViewer.classList.add("hidden");
   markdownViewer.classList.remove("hidden");
   markdownViewer.innerHTML = html;
+  if (filePath) {
+    rewriteRelativeAssets(markdownViewer, filePath);
+  }
   
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
@@ -1304,7 +1468,7 @@ function openDocument(doc) {
     const mdPathChanged = previousMdPath !== nextMdPath;
     if (mdPathChanged) {
       existingTab.content = null;
-      existingTab.renderedHtml = null;
+      invalidateTabRenderCache(existingTab);
       existingTab.loadFailed = false;
     }
     existingTab.mdPath = nextMdPath;
@@ -1345,7 +1509,7 @@ function syncOpenTabsWithWorkspaceDocuments() {
     tab.pdfPath = nextPdfPath;
     if (mdPathChanged) {
       tab.content = null;
-      tab.renderedHtml = null;
+      invalidateTabRenderCache(tab);
       tab.loadFailed = false;
       if (tab.mdPath) {
         tab.path = tab.mdPath;
@@ -2095,6 +2259,9 @@ async function openFileFromTree(node) {
     viewType: isPdf ? "pdf" : "markdown",
     content: null,
     renderedHtml: null,
+    windowHtml: null,
+    chunkState: null,
+    renderToken: 0,
     loadFailed: false,
     isExternal: true,
     scrollTop: 0,
@@ -2282,12 +2449,18 @@ async function openSelectedWorkspace() {
     }
   }
   
-  const [bootstrapResult] = await Promise.all([
+  const startupLoads = await Promise.allSettled([
     loadBootstrapState(),
     loadWorkspaceFiles(),
     loadWorkspaceJobs(),
     loadConversationSummaries(),
   ]);
+  const bootstrapResult = startupLoads[0]?.status === "fulfilled" ? startupLoads[0].value : null;
+  const failedLoadCount = startupLoads.filter((result) => result.status === "rejected").length;
+  if (failedLoadCount > 0) {
+    console.warn("Workspace opened with partial data due to load failures.", startupLoads);
+    updateStatus("Workspace opened with partial data. Some panels may refresh shortly.", "error");
+  }
   
   const shouldHydratePersistedState = bootstrapPayload?.merged?.workspaceId === currentWorkspace.id;
   if (shouldHydratePersistedState) {
@@ -2500,7 +2673,11 @@ function attachKeyboardShortcuts() {
 
 // Initialize
 async function initializeApp() {
-  await loadBootstrapState();
+  try {
+    await loadBootstrapState();
+  } catch (error) {
+    console.warn("Bootstrap preload failed; continuing app startup.", error);
+  }
   await loadModelOptions();
   await loadWorkspaceRoot();
   const preferredRoot = bootstrapPayload?.global?.lastRoot;
@@ -2512,7 +2689,16 @@ async function initializeApp() {
   updateStatus("Ready");
   
   if (currentWorkspace?.id) {
-    await openSelectedWorkspace();
+    try {
+      await openSelectedWorkspace();
+    } catch (error) {
+      console.warn("Initial workspace open failed, retrying once.", error);
+      await new Promise((resolve) => window.setTimeout(resolve, 350));
+      await refreshWorkspaceList();
+      if (currentWorkspace?.id) {
+        await openSelectedWorkspace();
+      }
+    }
   }
 }
 
@@ -2660,7 +2846,14 @@ chatListModal.addEventListener("click", (event) => {
 markdownViewButton.addEventListener("click", () => {
   const activeTab = openTabs.find(t => t.id === activeTabId);
   if (activeTab?.renderedHtml) {
-    showCachedHtml(activeTab.renderedHtml);
+    showCachedHtml(activeTab.renderedHtml, activeTab.scrollTop, activeTab.path);
+  } else if (activeTab?.windowHtml) {
+    showCachedHtml(activeTab.windowHtml, activeTab.scrollTop, activeTab.path);
+    if (activeTab.content) {
+      const state = ensureChunkState(activeTab);
+      const centerIdx = estimateChunkIndexForTab(activeTab, state);
+      startBackgroundRender(activeTab, activeTab.path, centerIdx);
+    }
   } else if (activeTab?.content) {
     showMarkdownContent(activeTab.content, activeTab.path, activeTab);
   } else if (activeTab?.docId) {
