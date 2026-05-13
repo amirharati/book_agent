@@ -1,8 +1,11 @@
-import { marked } from "https://esm.sh/marked@12.0.2";
-import markedKatex from "https://esm.sh/marked-katex-extension@5.1.1";
-import DOMPurify from "https://esm.sh/dompurify@3.1.6?bundle";
+import { marked } from "/web_modules/marked/lib/marked.esm.js";
+import DOMPurify from "/web_modules/dompurify/dist/purify.es.mjs";
 
-marked.use(markedKatex({ throwOnError: false, nonStandard: true }));
+if (typeof window.markedKatex === "function") {
+  marked.use(window.markedKatex({ throwOnError: false, nonStandard: true }));
+} else {
+  console.warn("marked-katex-extension not available; math rendering extension disabled.");
+}
 marked.setOptions({ gfm: true, breaks: false });
 
 const KATEX_TAGS = ["math", "semantics", "annotation", "mrow", "mi", "mn", "mo", "ms", "mspace", "mtext", "msub", "msup", "msubsup", "mfrac", "mroot", "msqrt", "mover", "munder", "munderover", "mtable", "mtr", "mtd", "mlabeledtr", "menclose", "mphantom", "mpadded", "mstyle", "merror", "maction"];

@@ -170,6 +170,7 @@ interface SessionRuntimeContext {
 export function createApp({ backend, backendName, workspaceRoot = process.cwd() }: CreateAppInput) {
   const app = express();
   const staticDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../public");
+  const webModulesDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../node_modules");
   const resolvedWorkspaceRoot = path.resolve(workspaceRoot);
   const policySourceRoot = process.env.BOOK_AGENT_POLICY_ROOT
     ? path.resolve(process.env.BOOK_AGENT_POLICY_ROOT)
@@ -198,6 +199,7 @@ export function createApp({ backend, backendName, workspaceRoot = process.cwd() 
   });
 
   app.use(express.static(staticDir));
+  app.use("/web_modules", express.static(webModulesDir));
   app.use(express.json({ limit: "1mb" }));
 
   app.get("/health", (_req, res) => {
