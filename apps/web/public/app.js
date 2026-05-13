@@ -26,6 +26,11 @@ const addDocumentButton = document.querySelector("#addDocumentButton");
 const deleteDocumentButton = document.querySelector("#deleteDocumentButton");
 const openDocumentTrashButton = document.querySelector("#openDocumentTrashButton");
 const documentList = document.querySelector("#documentList");
+const artifactList = document.querySelector("#artifactList");
+const documentsTabInputs = document.querySelector("#documentsTabInputs");
+const documentsTabArtifacts = document.querySelector("#documentsTabArtifacts");
+const documentsInputsPanel = document.querySelector("#documentsInputsPanel");
+const documentsArtifactsPanel = document.querySelector("#documentsArtifactsPanel");
 const setupStatus = document.querySelector("#setupStatus");
 const workspaceChip = document.querySelector("#workspaceChip");
 const documentChip = document.querySelector("#documentChip");
@@ -168,6 +173,13 @@ let workspaceJobs = [];
 let conversionTargetDocument = null;
 let jobsPollFailureCount = 0;
 let deleteConfirmAction = null;
+let documentsPanelTab = "inputs";
+let workspaceSyncTimer = null;
+let workspaceSyncInFlight = false;
+let workspaceSyncTick = 0;
+
+const WORKSPACE_SYNC_INTERVAL_MS = 5000;
+const WORKSPACE_LIST_SYNC_EVERY_TICKS = 6;
 
 const DEFAULT_MARKER_OPTIONS = {
   output_format: "markdown",
@@ -197,6 +209,7 @@ let activeTabId = null;
 
 // File tree state
 let workspaceFileTree = [];
+let workspaceArtifacts = [];
 const expandedDirs = new Set();
 const saveSessionStateDebounced = debounce(() => {
   persistWorkspaceSessionState().catch((error) => {
@@ -1698,26 +1711,28 @@ function renderWorkspaceOptions() {
 }
 
 function renderDocumentList() {
-  documentList.innerHTML = "";
-  
   const documents = currentWorkspace?.documents ?? [];
   const activeDocument = getCurrentWorkspaceDocument();
-  
+
+  addDocumentButton.disabled = !currentWorkspace;
+  openDocumentTrashButton.disabled = !currentWorkspace;
+  deleteDocumentButton.disabled = !activeDocument || documentsPanelTab !== "inputs";
+
+  renderInputDocumentList(documents);
+  renderArtifactList();
+  renderDocumentsPanelState();
+}
+
+function renderInputDocumentList(documents) {
+  documentList.innerHTML = "";
   if (!currentWorkspace || documents.length === 0) {
     const empty = document.createElement("p");
     empty.className = "empty-hint";
     empty.textContent = currentWorkspace ? "No documents added yet" : "Open a workspace to see documents";
     documentList.appendChild(empty);
-    addDocumentButton.disabled = !currentWorkspace;
-    deleteDocumentButton.disabled = true;
-    openDocumentTrashButton.disabled = !currentWorkspace;
     return;
   }
-  
-  addDocumentButton.disabled = false;
-  openDocumentTrashButton.disabled = false;
-  deleteDocumentButton.disabled = !activeDocument;
-  
+
   for (const doc of documents) {
     const item = document.createElement("button");
     item.type = "button";
@@ -1750,6 +1765,78 @@ function renderDocumentList() {
     });
     
     documentList.appendChild(item);
+  }
+}
+
+async function loadWorkspaceArtifacts({ reconcile = true } = {}) {
+  if (!currentWorkspace) {
+    workspaceArtifacts = [];
+    renderArtifactList();
+    return;
+  }
+  try {
+    const query = new URLSearchParams();
+    query.set("reconcile", reconcile ? "true" : "false");
+    const payload = await apiRequest(`/api/workspaces/${encodeURIComponent(currentWorkspace.id)}/artifacts?${query.toString()}`);
+    workspaceArtifacts = Array.isArray(payload.artifacts) ? payload.artifacts : [];
+  } catch (error) {
+    console.warn("Failed to load workspace artifacts:", error);
+    workspaceArtifacts = [];
+  }
+  renderArtifactList();
+}
+
+function renderArtifactList() {
+  artifactList.innerHTML = "";
+  if (!currentWorkspace) {
+    artifactList.innerHTML = `<p class="empty-hint">Open a workspace to see artifacts</p>`;
+    return;
+  }
+
+  if (!workspaceArtifacts.length) {
+    artifactList.innerHTML = `<p class="empty-hint">No generated artifacts yet. Run a conversion and they will appear here.</p>`;
+    return;
+  }
+
+  for (const artifact of workspaceArtifacts) {
+    if (artifact?.status && artifact.status !== "active") continue;
+    const relativePath = typeof artifact.relativePath === "string" ? artifact.relativePath : "";
+    if (!relativePath) continue;
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "document-item artifact-item";
+    const filePath = relativePath;
+    const folder = dirname(filePath);
+    const sourceLabel = artifact.inArtifactsRoot ? "artifacts" : (artifact.source || "indexed");
+    item.innerHTML = `
+      <span class="document-item-name">${artifact.name || basename(filePath)}</span>
+      <span class="artifact-meta">${sourceLabel} · ${folder}</span>
+    `;
+    item.addEventListener("click", () => {
+      openFileFromTree({
+        type: "file",
+        path: filePath,
+        name: artifact.name || basename(filePath),
+        extension: artifact.extension || "",
+      }).catch(handleError);
+    });
+    artifactList.appendChild(item);
+  }
+}
+
+function renderDocumentsPanelState() {
+  const inputsActive = documentsPanelTab === "inputs";
+  documentsTabInputs.classList.toggle("active", inputsActive);
+  documentsTabArtifacts.classList.toggle("active", !inputsActive);
+  documentsInputsPanel.classList.toggle("hidden", !inputsActive);
+  documentsArtifactsPanel.classList.toggle("hidden", inputsActive);
+}
+
+function setDocumentsPanelTab(tab) {
+  documentsPanelTab = tab === "artifacts" ? "artifacts" : "inputs";
+  renderDocumentList();
+  if (documentsPanelTab === "artifacts" && currentWorkspace) {
+    loadWorkspaceArtifacts({ reconcile: true }).catch(handleError);
   }
 }
 
@@ -1817,6 +1904,7 @@ async function deleteDocument(doc, mode) {
   }
   await refreshWorkspaceList();
   await loadWorkspaceFiles();
+  await loadWorkspaceArtifacts({ reconcile: true });
   await loadWorkspaceJobs();
 }
 
@@ -1853,6 +1941,7 @@ async function deleteCurrentWorkspace(mode) {
   showPlaceholder();
   await refreshWorkspaceList();
   await loadWorkspaceFiles();
+  await loadWorkspaceArtifacts({ reconcile: true });
   renderJobs([]);
   clearChatSessionState("Open a workspace to start");
 }
@@ -2350,6 +2439,64 @@ async function loadWorkspaceJobs() {
   return jobs;
 }
 
+async function syncCurrentWorkspaceState({ includeWorkspaceList = false } = {}) {
+  if (!currentWorkspace || workspaceSyncInFlight) return;
+  const workspaceId = currentWorkspace.id;
+  workspaceSyncInFlight = true;
+  try {
+    const [detailResult] = await Promise.allSettled([
+      apiRequest(`/api/workspaces/${encodeURIComponent(workspaceId)}`),
+      loadWorkspaceFiles(),
+      loadWorkspaceJobs(),
+      loadWorkspaceArtifacts({ reconcile: false }),
+    ]);
+
+    if (!currentWorkspace || currentWorkspace.id !== workspaceId) {
+      return;
+    }
+
+    if (detailResult.status === "fulfilled" && detailResult.value) {
+      currentWorkspace = detailResult.value;
+      renderDocumentList();
+      updateContextChips();
+      const activeTabNeedsReload = syncOpenTabsWithWorkspaceDocuments();
+      if (activeTabNeedsReload && activeTabId) {
+        activateTab(activeTabId);
+      }
+    } else if (detailResult.status === "rejected") {
+      const reasonText = detailResult.reason instanceof Error
+        ? detailResult.reason.message
+        : String(detailResult.reason ?? "");
+      if (reasonText.includes("404") || reasonText.toLowerCase().includes("not found")) {
+        await refreshWorkspaceList();
+      }
+    }
+
+    if (includeWorkspaceList) {
+      await refreshWorkspaceList();
+    }
+  } finally {
+    workspaceSyncInFlight = false;
+  }
+}
+
+function triggerWorkspaceSync(includeWorkspaceList = false) {
+  if (!currentWorkspace) return;
+  syncCurrentWorkspaceState({ includeWorkspaceList }).catch((error) => {
+    console.warn("Workspace sync failed:", error);
+  });
+}
+
+function startWorkspaceAutoSync() {
+  if (workspaceSyncTimer) return;
+  workspaceSyncTimer = window.setInterval(() => {
+    if (document.hidden || !currentWorkspace) return;
+    workspaceSyncTick += 1;
+    const includeWorkspaceList = workspaceSyncTick % WORKSPACE_LIST_SYNC_EVERY_TICKS === 0;
+    triggerWorkspaceSync(includeWorkspaceList);
+  }, WORKSPACE_SYNC_INTERVAL_MS);
+}
+
 function startJobsPolling() {
   if (jobsPollTimer) return;
   jobsPollTimer = window.setInterval(async () => {
@@ -2358,7 +2505,7 @@ function startJobsPolling() {
       if (jobs.every((job) => job.status !== "running")) {
         window.clearInterval(jobsPollTimer);
         jobsPollTimer = null;
-        await refreshWorkspaceList();
+        await syncCurrentWorkspaceState({ includeWorkspaceList: true });
       }
     } catch (error) {
       jobsPollFailureCount += 1;
@@ -2555,6 +2702,7 @@ async function addExternalFileToWorkspace(tab) {
     currentWorkspace = updated;
     renderDocumentList();
     loadWorkspaceFiles();
+    loadWorkspaceArtifacts({ reconcile: true });
     await loadWorkspaceJobs();
     
     const newDoc = currentWorkspace.documents?.find(d => d.sourcePath === tab.path || d.name === tab.name);
@@ -2605,6 +2753,7 @@ async function refreshWorkspaceList() {
   }
 
   if (!currentWorkspace) {
+    workspaceArtifacts = [];
     clearChatSessionState("Open a workspace to start");
   }
   
@@ -2657,6 +2806,7 @@ async function createWorkspace() {
   await Promise.all([
     refreshWorkspaceList(),
     loadWorkspaceFiles(),
+    loadWorkspaceArtifacts({ reconcile: true }),
     loadWorkspaceJobs(),
     loadBootstrapState(),
     loadConversationSummaries(),
@@ -2708,6 +2858,7 @@ async function openSelectedWorkspace() {
   const startupLoads = await Promise.allSettled([
     loadBootstrapState(),
     loadWorkspaceFiles(),
+    loadWorkspaceArtifacts({ reconcile: true }),
     loadWorkspaceJobs(),
     loadConversationSummaries(),
   ]);
@@ -2750,6 +2901,7 @@ async function handleDocumentPicked(absolutePath) {
   closeFolderModal();
   saveLastImportPath(dirname(absolutePath));
   await refreshWorkspaceList();
+  await loadWorkspaceArtifacts({ reconcile: true });
   await loadWorkspaceJobs();
   updateStatus(`Added document: ${basename(absolutePath)}`);
   
@@ -2942,6 +3094,7 @@ async function initializeApp() {
     await saveWorkspaceRoot();
   }
   await refreshWorkspaceList();
+  startWorkspaceAutoSync();
   updateStatus("Ready");
   
   if (currentWorkspace?.id) {
@@ -2982,6 +3135,12 @@ composer.addEventListener("submit", async (event) => {
       { role: "assistant", content: assistantReply },
     ]);
     await maybeAutoRenameActiveConversation(userText, assistantReply);
+    if (currentWorkspace) {
+      await Promise.allSettled([
+        loadWorkspaceFiles(),
+        loadWorkspaceArtifacts({ reconcile: true }),
+      ]);
+    }
     saveSessionStateDebounced();
   } catch (error) {
     appendMessage("system", `Error: ${error instanceof Error ? error.message : "Unknown error"}`);
@@ -2999,6 +3158,8 @@ deleteWorkspaceButton.addEventListener("click", promptDeleteCurrentWorkspace);
 openTrashButton.addEventListener("click", () => openTrashModal().catch(handleError));
 openDocumentTrashButton.addEventListener("click", () => openTrashModal().catch(handleError));
 deleteDocumentButton.addEventListener("click", promptDeleteCurrentDocument);
+documentsTabInputs.addEventListener("click", () => setDocumentsPanelTab("inputs"));
+documentsTabArtifacts.addEventListener("click", () => setDocumentsPanelTab("artifacts"));
 
 toggleSetupSection.addEventListener("click", () => {
   const expanded = toggleSetupSection.getAttribute("aria-expanded") === "true";
@@ -3163,6 +3324,16 @@ const trackScrollDebounced = debounce(() => {
 }, 200);
 
 markdownViewer.addEventListener("scroll", trackScrollDebounced);
+window.addEventListener("focus", () => {
+  workspaceSyncTick = 0;
+  triggerWorkspaceSync(false);
+});
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    workspaceSyncTick = 0;
+    triggerWorkspaceSync(false);
+  }
+});
 
 // Initialize
 attachResizeBehavior();

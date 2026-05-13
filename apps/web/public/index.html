@@ -118,8 +118,19 @@
                 </button>
               </div>
             </div>
-            <div class="document-list" id="documentList">
-              <p class="empty-hint">Open a workspace</p>
+            <div class="documents-tabs" id="documentsTabs">
+              <button id="documentsTabInputs" type="button" class="documents-tab active">Inputs</button>
+              <button id="documentsTabArtifacts" type="button" class="documents-tab">Artifacts</button>
+            </div>
+            <div class="documents-panel" id="documentsInputsPanel">
+              <div class="document-list" id="documentList">
+                <p class="empty-hint">Open a workspace</p>
+              </div>
+            </div>
+            <div class="documents-panel hidden" id="documentsArtifactsPanel">
+              <div class="document-list" id="artifactList">
+                <p class="empty-hint">Open a workspace</p>
+              </div>
             </div>
           </section>
 
@@ -508,6 +519,6 @@
 
     <script src="/web_modules/katex/dist/katex.min.js"></script>
     <script src="/web_modules/marked-katex-extension/lib/index.umd.js"></script>
-    <script type="module" src="/app.js?v=33"></script>
+    <script type="module" src="/app.js?v=35"></script>
   </body>
 </html>

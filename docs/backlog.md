@@ -68,6 +68,13 @@ Refine as needed—not blocking core flow:
 - Revisit **preload** strategy (sequential vs parallel cap, cancel on close tab) to avoid background jank.
 - **Acceptance target:** sub‑100ms perceived tab switch when content is already loaded; predictable loading when not.
 
+### Artifacts indexing & quick access (**active — 2026-05-13**)
+
+- Add a workspace-level artifact index in `project.json` so artifact discovery is not tied to fragile file-tree path filters.
+- Track AI/conversion outputs even when they are **outside** `artifacts/` (for now), with source metadata (`marker_job` / `ai_chat` / `scan`) and status (`active`/`missing`).
+- Add reconcile logic: scan workspace for generated files, add missing index entries, and mark stale index rows when files disappear.
+- Drive the Documents → Artifacts tab from the index API (not from tree heuristics), with a later optional “move external artifacts into `artifacts/`” cleanup action.
+
 ---
 
 ## Next up — web app (easy first)

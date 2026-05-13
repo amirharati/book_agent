@@ -86,11 +86,27 @@ interface ProjectDocumentState {
   addedAt: string;
 }
 
+interface ProjectArtifactState {
+  id: string;
+  relativePath: string;
+  absolutePath: string;
+  name: string;
+  extension?: string;
+  kind: "markdown" | "json" | "text" | "html" | "pdf" | "csv" | "yaml" | "image" | "binary";
+  source: "marker_job" | "ai_chat" | "manual" | "scan";
+  sourceId?: string;
+  inArtifactsRoot: boolean;
+  status: "active" | "missing" | "deleted";
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface ProjectMetadata {
   project_id: string;
   project_name: string;
   created_at: string;
   documents: ProjectDocumentState[];
+  artifacts?: ProjectArtifactState[];
   deletedDocuments?: Array<{
     id: string;
     name: string;
@@ -588,6 +604,7 @@ export function createApp({ backend, backendName, workspaceRoot = process.cwd() 
         project_name: body.name.trim(),
         created_at: new Date().toISOString(),
         documents: [],
+        artifacts: [],
         deletedDocuments: [],
       });
 
@@ -1124,6 +1141,7 @@ export function createApp({ backend, backendName, workspaceRoot = process.cwd() 
         project_name: workspaceId,
         created_at: new Date().toISOString(),
         documents: [],
+        artifacts: [],
         deletedDocuments: [],
       };
       metadata.documents = metadata.documents.filter((doc) => doc.id !== documentId);
@@ -1167,6 +1185,7 @@ export function createApp({ backend, backendName, workspaceRoot = process.cwd() 
         project_name: workspaceId,
         created_at: new Date().toISOString(),
         documents: [],
+        artifacts: [],
         deletedDocuments: [],
       };
       const doc = metadata.documents.find((entry) => entry.id === documentId);
@@ -1298,6 +1317,7 @@ export function createApp({ backend, backendName, workspaceRoot = process.cwd() 
         project_name: workspaceId,
         created_at: new Date().toISOString(),
         documents: [],
+        artifacts: [],
         deletedDocuments: [],
       };
       const snapshot = (item.metadata?.document ?? {}) as Partial<ProjectDocumentState>;
@@ -1759,6 +1779,38 @@ export function createApp({ backend, backendName, workspaceRoot = process.cwd() 
         workspaceId,
         workspacePath: workspaceDir,
         tree,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/workspaces/:workspaceId/artifacts", async (req, res, next) => {
+    try {
+      const workspaceId = req.params.workspaceId;
+      const workspaceDir = path.join(runtimeConfig.workspaceRoot, workspaceId);
+      const state = await readBookWorkspaceState(workspaceDir);
+      if (!state) {
+        res.status(404).json({ error: "Workspace not found." });
+        return;
+      }
+      const metadata = (await readProjectMetadata(workspaceDir)) ?? {
+        project_id: workspaceId,
+        project_name: workspaceId,
+        created_at: new Date().toISOString(),
+        documents: [],
+        artifacts: [],
+        deletedDocuments: [],
+      };
+      const shouldReconcile = req.query.reconcile !== "false";
+      const artifacts = shouldReconcile
+        ? await reconcileWorkspaceArtifacts(workspaceDir, metadata)
+        : (metadata.artifacts ?? []);
+      res.json({
+        workspaceId,
+        artifacts: artifacts
+          .filter((entry) => entry.status !== "deleted")
+          .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
       });
     } catch (error) {
       next(error);
@@ -2316,6 +2368,135 @@ async function writeBookWorkspaceState(workspaceDir: string, state: BookWorkspac
   await writeJsonAtomic(statePath, state);
 }
 
+function toWorkspaceRelativePath(workspaceDir: string, absolutePath: string): string | null {
+  const relative = path.relative(workspaceDir, absolutePath);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    return null;
+  }
+  return relative.replace(/\\/g, "/");
+}
+
+function inferArtifactKind(extension: string): ProjectArtifactState["kind"] {
+  const ext = extension.toLowerCase();
+  if (ext === ".md" || ext === ".markdown") return "markdown";
+  if (ext === ".json") return "json";
+  if (ext === ".txt" || ext === ".log") return "text";
+  if (ext === ".html" || ext === ".htm") return "html";
+  if (ext === ".pdf") return "pdf";
+  if (ext === ".csv") return "csv";
+  if (ext === ".yaml" || ext === ".yml") return "yaml";
+  if (IMAGE_EXTENSIONS.has(ext)) return "image";
+  return "binary";
+}
+
+function createArtifactId(): string {
+  return `art-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function shouldIndexWorkspaceFileAsArtifact(relativePath: string, metadata: ProjectMetadata | null): boolean {
+  void metadata;
+  if (!relativePath) return false;
+  const normalized = relativePath.replace(/\\/g, "/");
+  const lower = normalized.toLowerCase();
+  if (lower === PROJECT_METADATA_NAME || lower === BOOK_WORKSPACE_STATE_NAME) {
+    return false;
+  }
+  if (lower.startsWith(".trash/") || lower.startsWith("jobs/")) {
+    return false;
+  }
+  if (SKIP_EXTENSIONS_DEFAULT.has(path.extname(lower))) {
+    return false;
+  }
+  return lower.startsWith("artifacts/");
+}
+
+async function scanWorkspaceArtifactPaths(workspaceDir: string, metadata: ProjectMetadata | null): Promise<string[]> {
+  const results: string[] = [];
+  const walk = async (dirPath: string): Promise<void> => {
+    const entries = await fs.readdir(dirPath, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) continue;
+      const absolutePath = path.join(dirPath, entry.name);
+      const relativePath = toWorkspaceRelativePath(workspaceDir, absolutePath);
+      if (!relativePath) continue;
+      if (entry.isDirectory()) {
+        if (SKIP_DIRS.has(entry.name) || relativePath.startsWith("jobs")) {
+          continue;
+        }
+        await walk(absolutePath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      if (shouldIndexWorkspaceFileAsArtifact(relativePath, metadata)) {
+        results.push(relativePath);
+      }
+    }
+  };
+  await walk(workspaceDir);
+  return results;
+}
+
+function upsertArtifactEntry(
+  metadata: ProjectMetadata,
+  workspaceDir: string,
+  relativePath: string,
+  source: ProjectArtifactState["source"] = "scan",
+  sourceId?: string,
+): void {
+  const normalized = relativePath.replace(/\\/g, "/");
+  const absolutePath = path.join(workspaceDir, normalized);
+  const now = new Date().toISOString();
+  const existing = (metadata.artifacts ?? []).find((entry) => entry.relativePath === normalized);
+  const extension = path.extname(normalized).toLowerCase() || undefined;
+  if (existing) {
+    existing.absolutePath = absolutePath;
+    existing.name = path.basename(normalized);
+    existing.extension = extension;
+    existing.kind = inferArtifactKind(extension ?? "");
+    existing.inArtifactsRoot = normalized.startsWith("artifacts/");
+    existing.status = "active";
+    existing.updatedAt = now;
+    if (source !== "scan" || !existing.source) existing.source = source;
+    if (sourceId) existing.sourceId = sourceId;
+    return;
+  }
+  metadata.artifacts = metadata.artifacts ?? [];
+  metadata.artifacts.push({
+    id: createArtifactId(),
+    relativePath: normalized,
+    absolutePath,
+    name: path.basename(normalized),
+    extension,
+    kind: inferArtifactKind(extension ?? ""),
+    source,
+    sourceId,
+    inArtifactsRoot: normalized.startsWith("artifacts/"),
+    status: "active",
+    createdAt: now,
+    updatedAt: now,
+  });
+}
+
+async function reconcileWorkspaceArtifacts(workspaceDir: string, metadata: ProjectMetadata): Promise<ProjectArtifactState[]> {
+  metadata.artifacts = metadata.artifacts ?? [];
+  const discoveredPaths = await scanWorkspaceArtifactPaths(workspaceDir, metadata);
+
+  for (const relativePath of discoveredPaths) {
+    upsertArtifactEntry(metadata, workspaceDir, relativePath, "scan");
+  }
+
+  for (const artifact of metadata.artifacts) {
+    artifact.absolutePath = path.join(workspaceDir, artifact.relativePath);
+    const stat = await fs.stat(artifact.absolutePath).catch(() => null);
+    artifact.status = stat?.isFile() ? "active" : "missing";
+    artifact.updatedAt = new Date().toISOString();
+  }
+
+  metadata.artifacts.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  await writeProjectMetadata(workspaceDir, metadata);
+  return metadata.artifacts;
+}
+
 async function readProjectMetadata(workspaceDir: string): Promise<ProjectMetadata | null> {
   const metadataPath = path.join(workspaceDir, PROJECT_METADATA_NAME);
   const raw = await fs.readFile(metadataPath, "utf8").catch(() => "");
@@ -2338,6 +2519,30 @@ async function readProjectMetadata(workspaceDir: string): Promise<ProjectMetadat
               currentDir: typeof entry.currentDir === "string" ? entry.currentDir : undefined,
               pdfPath: typeof entry.pdfPath === "string" ? entry.pdfPath : undefined,
               sourceKind: entry.sourceKind === "pdf" ? "pdf" : "markdown",
+            }))
+        : [],
+      artifacts: Array.isArray(parsed.artifacts)
+        ? parsed.artifacts
+            .filter((entry): entry is ProjectArtifactState =>
+              typeof entry === "object"
+              && entry !== null
+              && typeof (entry as { id?: unknown }).id === "string"
+              && typeof (entry as { relativePath?: unknown }).relativePath === "string")
+            .map((entry) => ({
+              id: entry.id,
+              relativePath: entry.relativePath,
+              absolutePath: typeof entry.absolutePath === "string"
+                ? entry.absolutePath
+                : path.join(workspaceDir, entry.relativePath),
+              name: typeof entry.name === "string" && entry.name ? entry.name : path.basename(entry.relativePath),
+              extension: typeof entry.extension === "string" ? entry.extension : path.extname(entry.relativePath).toLowerCase() || undefined,
+              kind: entry.kind ?? inferArtifactKind(path.extname(entry.relativePath).toLowerCase()),
+              source: entry.source ?? "scan",
+              sourceId: typeof entry.sourceId === "string" ? entry.sourceId : undefined,
+              inArtifactsRoot: entry.inArtifactsRoot === true || entry.relativePath.startsWith("artifacts/"),
+              status: entry.status === "missing" ? "missing" : entry.status === "deleted" ? "deleted" : "active",
+              createdAt: typeof entry.createdAt === "string" ? entry.createdAt : new Date().toISOString(),
+              updatedAt: typeof entry.updatedAt === "string" ? entry.updatedAt : new Date().toISOString(),
             }))
         : [],
       deletedDocuments: Array.isArray(parsed.deletedDocuments)
@@ -3006,7 +3211,7 @@ async function runMarkerConversionJob(input: {
           ...metadata.documents[index],
           mdPath: mdPathForMetadata,
         };
-        await writeProjectMetadata(workspaceDir, metadata);
+        await reconcileWorkspaceArtifacts(workspaceDir, metadata);
       }
     }
 
